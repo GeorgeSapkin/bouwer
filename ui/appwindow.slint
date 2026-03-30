@@ -1,0 +1,614 @@
+// Copyright (C) 2026 George Sapkin
+//
+// SPDX-License-Identifier: GPL-3.0-only
+
+import {
+    Button,
+    ComboBox,
+    HorizontalBox,
+    LineEdit,
+    ListView,
+    Palette,
+    ProgressIndicator,
+    ScrollView,
+    Switch,
+    TabWidget,
+    TextEdit,
+    VerticalBox,
+} from "std-widgets.slint";
+
+global Constants {
+    in-out property <length> autocomplete_element_height: 40px;
+}
+
+export component AppWindow inherits Window {
+    in property <bool> busy: false;
+    in property <bool> image_exists: false;
+    in property <bool> notification_is_error: false;
+    in property <bool> profiles_fetch_failed: false;
+    in property <[string]> profiles: [];
+    in property <float> progress_value: 0.0;
+    in property <bool> progress_visible: false;
+    in property <string> removed_packages_text: "";
+    in property <string> selected_id: "";
+    in property <string> selected_model: "";
+    in property <string> selected_target: "";
+    in property <[string]> versions: [];
+
+    in-out property <string> build_output: "";
+    in-out property <int> current_highlighted_profile_index: -1;
+    in-out property <string> disabled_service_text: "";
+    in-out property <string> extra_image_name_text: "";
+    in-out property <string> notification: "";
+    in-out property <string> overlay_path_text: "";
+    in-out property <string> packages_text: "";
+    in-out property <string> rootfs_size_value: "";
+    in-out property <string> search_text: "";
+    in-out property <bool> show_rcs: false;
+
+    callback build_requested(string);
+    callback download_requested();
+    callback load_preset_requested();
+    callback open_build_folder_requested();
+    callback open_overlay_folder_requested();
+    callback packages_edited(string);
+    callback profile_search_edited(string);
+    callback profile_search_key_pressed(KeyEvent) -> bool;
+    callback profile_selected(string);
+    callback request_profile_search_focus();
+    callback save_preset_requested(string, string, string, string, string, string, string);
+    callback show_rcs_toggled(bool);
+    callback version_changed(string);
+
+    request_profile_search_focus => {
+        profile_search.focus();
+    }
+
+    title: "Bouwer - OpenWrt Firmware Builder";
+    min-width: 700px;
+    min-height: 800px;
+
+    VerticalBox {
+        spacing: 10px;
+
+        Rectangle {
+            background: notification_is_error ? #ffebee : #e1f5fe;
+            border-color: notification_is_error ? #f44336 : #03a9f4;
+            border-width: 1px;
+            border-radius: 4px;
+            height: 0px;
+            opacity: 0.0;
+            clip: true;
+
+            HorizontalBox {
+                padding-left: 15px;
+                padding-right: 15px;
+                Text {
+                    text: notification;
+                    color: notification_is_error ? #b71c1c : #01579b;
+                    vertical-alignment: center;
+                    font-size: 14px;
+                    horizontal-stretch: 1;
+                }
+
+                Text {
+                    text: "🗙";
+                    color: notification_is_error ? #b71c1c : #01579b;
+                    vertical-alignment: center;
+                    font-size: 18px;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            notification = "";
+                        }
+                    }
+                }
+            }
+
+            states [
+                visible_state when notification != "": {
+                    opacity: 1.0;
+                    height: 50px;
+                    in {
+                        animate opacity, height { duration: 250ms; }
+                    }
+                    out {
+                        animate opacity, height { duration: 250ms; }
+                    }
+                }
+            ]
+        }
+
+        HorizontalBox {
+            padding: 0px;
+            version_text :=Text {
+                text: "Version:";
+                font-size: 14px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                width: 55px;
+            }
+
+            version_combo := ComboBox {
+                model: versions;
+                enabled: !busy;
+                horizontal-stretch: 1;
+                selected(val) => {
+                    version_changed(val);
+                }
+            }
+
+            Switch {
+                text: "Show pre-release versions";
+                enabled: !busy;
+                checked <=> show_rcs;
+                toggled => {
+                    show_rcs_toggled(self.checked);
+                }
+            }
+        }
+
+        HorizontalBox {
+            padding: 0px;
+            z: 1;
+            Text {
+                text: "Profile:";
+                font-size: 14px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                width: version_text.width;
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+
+                profile_search := LineEdit {
+                    width: 100%;
+                    text <=> search_text;
+                    placeholder_text: "Type to search...";
+                    enabled: !busy && versions.length > 0 && !profiles_fetch_failed;
+
+                    edited(text) => {
+                        profile_search_edited(text);
+                    }
+                    key-pressed(event) => {
+                        if (profile_search_key_pressed(event)) {
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+
+                if (profiles.length > 0 && selected_id == ""): Rectangle {
+                    background: Palette.background;
+                    border-width: 1px;
+                    border-color: Palette.border;
+                    border-radius: 4px;
+                    // Shadow is invisible if clip is true
+                    clip: false;
+                    height: 200px;
+                    y: profile_search.height + 6px;
+
+                    drop-shadow-blur: 16px;
+                    drop-shadow-offset-y: 8px;
+                    drop-shadow-color: Palette.color-scheme == ColorScheme.dark ? rgba(0, 0, 0, 0.26) : rgba(0, 0, 0, 0.14);
+
+                    TouchArea {
+                        width: 100%;
+                        height: 100%;
+                    }
+
+                    ListView {
+                        height: parent.height;
+
+                        // Auto-scroll logic: ensure the keyboard-highlighted item is visible
+                        property <int> active_index: current_highlighted_profile_index;
+                        changed active_index => {
+                            if (self.active_index < 0) {
+                                return;
+                            }
+                            if (self.active_index * Constants.autocomplete_element_height < -self.viewport-y) {
+                                self.viewport-y = -self.active_index * Constants.autocomplete_element_height;
+                            } else if ((self.active_index + 1) * Constants.autocomplete_element_height > -self.viewport-y + self.height) {
+                                self.viewport-y = -((self.active_index + 1) * Constants.autocomplete_element_height - self.height);
+                            }
+                        }
+
+                        for profile[index] in profiles: Rectangle {
+                            height: Constants.autocomplete_element_height;
+
+                            item_bg := Rectangle {
+                                x: 4px;
+                                y: 2px;
+                                height: parent.height - 4px;
+                                width: parent.width - 8px;
+                                border-radius: 4px;
+                                background: index == current_highlighted_profile_index ? Palette.control-background : item_touch.has-hover ? Palette.alternate-background : transparent;
+                                animate background { duration: 125ms; }
+                            }
+
+                            // Selection marker (Fluent style)
+                            Rectangle {
+                                x: 8px;
+                                y: (parent.height - self.height) / 2;
+                                width: 3px;
+                                height: index == current_highlighted_profile_index ? 16px : 0px;
+                                background: Palette.accent-background;
+                                border-radius: 2px;
+                                opacity: index == current_highlighted_profile_index ? 1.0 : 0.0;
+                                animate height, opacity {
+                                    duration: 150ms;
+                                    easing: ease-out;
+                                }
+                            }
+
+                            Text {
+                                x: 20px;
+                                text: profile;
+                                vertical-alignment: center;
+                                color: Palette.foreground;
+                                animate color { duration: 125ms; }
+                            }
+
+                            item_touch := TouchArea {
+                                clicked => {
+                                    profile_selected(profile);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+
+        HorizontalBox {
+            padding: 0px;
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            download_button := Button {
+                text: "Download image builder";
+                enabled: !busy && selected_id != "" && !image_exists;
+                primary: selected_id != "" &&!image_exists;
+                clicked => {
+                    download_requested();
+                }
+            }
+
+            load_preset_button := Button {
+                text: "Load preset";
+                enabled: !busy && !profiles_fetch_failed;
+                clicked => {
+                    load_preset_requested();
+                }
+            }
+
+            save_preset_button := Button {
+                text: "Save preset";
+                enabled: !busy && image_exists && !profiles_fetch_failed;
+                clicked => {
+                    save_preset_requested(
+                        root.selected_target,
+                        root.selected_id,
+                        root.extra_image_name_text,
+                        root.rootfs_size_value,
+                        root.packages_text,
+                        root.disabled_service_text,
+                        root.overlay_path_text,
+                    );
+                }
+            }
+        }
+
+        Rectangle {
+            background: Palette.control-background;
+            border-width: 1px;
+            border-color: Palette.border;
+            border-radius: 4px;
+            GridLayout {
+                padding: 10px;
+                spacing: 6px;
+                Row {
+                    Text {
+                        text: "Model:";
+                        width: 45px;
+                        font-size: 12px;
+                        font-weight: 700;
+                        horizontal-alignment: right;
+                    }
+
+                    Text {
+                        text: selected_model;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                Row {
+                    Text {
+                        text: "ID:";
+                        font-size: 12px;
+                        font-weight: 700;
+                        horizontal-alignment: right;
+                    }
+
+                    Text {
+                        text: selected_id;
+                        font-size: 12px;
+                    }
+                }
+
+                Row {
+                    Text {
+                        text: "Target:";
+                        font-size: 12px;
+                        font-weight: 700;
+                        horizontal-alignment: right;
+                    }
+
+                    Text {
+                        text: selected_target;
+                        font-size: 12px;
+                    }
+                }
+            }
+        }
+
+        TabWidget {
+            Tab {
+                title: "General settings";
+
+                VerticalBox {
+                    padding: 0px;
+                    padding-top: 10px;
+
+                    HorizontalBox {
+                        padding: 0px;
+                        Text {
+                            text: "Extra image name:";
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
+
+                        extra_image_name := LineEdit {
+                            text <=> extra_image_name_text;
+                            enabled: !busy && image_exists;
+                            placeholder_text: "none";
+                        }
+                    }
+
+                    Text {
+                        text: "Packages (space separated):";
+                        font-size: 14px;
+                        horizontal-alignment: left;
+                    }
+
+                    packages_text := TextEdit {
+                        text <=> root.packages_text;
+                        enabled: !busy && image_exists;
+                        min-height: 60px;
+                        placeholder-text: "none";
+                        edited(text) => {
+                            packages_edited(text);
+                        }
+                    }
+
+                    Text {
+                        text: "Removed default packages:";
+                        font-size: 14px;
+                        horizontal-alignment: left;
+                    }
+
+                    removed_packages_text := TextEdit {
+                        text: root.removed_packages_text;
+                        enabled: !busy && image_exists;
+                        min-height: 60px;
+                        placeholder-text: "none";
+                        read-only: true;
+                    }
+                }
+            }
+
+            Tab {
+                title: "Advanced settings";
+
+                VerticalBox {
+                    padding: 0px;
+                    padding-top: 10px;
+
+                    HorizontalBox {
+                        padding: 0px;
+                        Text {
+                            text: "RootFS size (in MiB):";
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
+
+                        rootfs_size := LineEdit {
+                            text <=> rootfs_size_value;
+                            enabled: !busy && image_exists;
+                            input-type: InputType.number;
+                            placeholder_text: "default";
+                        }
+                    }
+
+                    Text {
+                        text: "Disabled services (space separated):";
+                        font-size: 14px;
+                        horizontal-alignment: left;
+                    }
+
+                    disabled_service_text := TextEdit {
+                        text <=> root.disabled_service_text;
+                        enabled: !busy && image_exists;
+                        min-height: 60px;
+                        placeholder-text: "none";
+                    }
+
+                    HorizontalBox {
+                        padding: 0px;
+                        Text {
+                            text: "Overlay path:";
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
+
+                        overlay_path_text := LineEdit {
+                            text <=> root.overlay_path_text;
+                            enabled: !busy && image_exists;
+                            placeholder_text: "none";
+                            read-only: false;
+                        }
+
+                        Button {
+                            text: "Select folder";
+                            enabled: !busy && !profiles_fetch_failed;
+                            clicked => {
+                                open_overlay_folder_requested();
+                            }
+                        }
+                    }
+
+                }
+            }
+        }
+
+        HorizontalBox {
+            padding: 0px;
+            spacing: 10px;
+
+            build_output_switch := Switch {
+                checked: false;
+                enabled: !busy && !profiles_fetch_failed;
+                text: "Show build output";
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            Button {
+                text: "Open firmware build folder";
+                enabled: !busy && !profiles_fetch_failed;
+                clicked => {
+                    open_build_folder_requested();
+                }
+            }
+
+            build_button := Button {
+                text: "Build firmware";
+                primary: true;
+                enabled: !busy && image_exists && root.packages_text != "";
+                clicked => {
+                    build_requested(root.packages_text);
+                }
+            }
+        }
+
+        VerticalBox {
+            padding: 0;
+            vertical-stretch: 1;
+            height: 0px;
+            opacity: 0.0;
+            visible: false;
+
+            Rectangle {
+                background: Palette.background;
+                border-width: 1px;
+                border-color: Palette.border;
+                border-radius: 4px;
+                clip: true;
+                vertical-stretch: 1;
+                min-height: 150px;
+                Flickable {
+                    viewport-height: log-text.preferred-height + 10px;
+                    viewport-y: min(0px, self.height - self.viewport-height);
+                    log-text := Text {
+                        x: 5px;
+                        y: 5px;
+                        width: parent.width - 10px;
+                        text: build_output;
+                        font-family: "monospace";
+                        wrap: word-wrap;
+                        color: Palette.foreground;
+                    }
+                }
+            }
+
+            states [
+                visible_state when build_output_switch.checked: {
+                    opacity: 1.0;
+                    height: 150px;
+                    visible: true;
+                    in {
+                        animate opacity, height { duration: 250ms; }
+                    }
+                    out {
+                        animate opacity, height { duration: 250ms; }
+                    }
+                }
+            ]
+        }
+
+        Rectangle {
+            background: Palette.control-background;
+            border-width: 1px;
+            border-color: Palette.border;
+            border-radius: 4px;
+
+            HorizontalBox {
+                padding-top: 6px;
+                padding-bottom: 6px;
+                padding-left: 10px;
+                padding-right: 10px;
+
+                status_text := Text {
+                    text: "Ready";
+                    font-size: 12px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+
+                    states [
+                        fetch_failed when profiles_fetch_failed : {
+                            text: "Failed to fetch profiles";
+                        }
+                        no_profile when selected_id == "" : {
+                            text: "Select profile";
+                        }
+                        missing_builder when !image_exists : {
+                            text: "Missing image builder";
+                        }
+                        building when busy && progress_visible && build_output != "" : {
+                            text: "Building";
+                        }
+                        loading_packages when busy : {
+                            text: "Loading package list";
+                        }
+                    ]
+                }
+
+                VerticalBox {
+                    ProgressIndicator {
+                        height: 10px;
+                        progress: progress_value;
+                        opacity: 0.0;
+                        indeterminate: progress_value == 0.0 && progress_visible;
+
+                        states [
+                            visible_state when progress_visible: {
+                                opacity: 1.0;
+                                in {
+                                    animate opacity { duration: 250ms; }
+                                }
+                                out {
+                                    animate opacity { duration: 250ms; }
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
+}

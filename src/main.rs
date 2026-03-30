@@ -1,0 +1,1280 @@
+// Copyright (C) 2026 George Sapkin
+//
+// SPDX-License-Identifier: GPL-3.0-only
+
+use chrono::Local;
+use serde::{Deserialize, Serialize};
+use slint::platform::Key;
+use slint::{Model, SharedString, VecModel};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::rc::Rc;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+use tokio::task::JoinHandle;
+
+mod client;
+mod containers;
+mod profiles;
+
+use client::{OpenWrtClient, Profile};
+use containers::{Volume, image_exists, podman_available, pull_image, run_container};
+use profiles::{
+    filter_profiles, find_profile_by_display_name, format_profile, get_all_models_string,
+};
+
+slint::include_modules!();
+
+const BASE_URL: &str = "https://downloads.openwrt.org";
+const EXTRA_PACKAGES: &str = "luci luci-app-attendedsysupgrade";
+const IMAGE_NAME: &str = "openwrt/imagebuilder";
+const MIN_SEARCH_CHARS: usize = 3;
+const MIN_SERIES: usize = 21;
+
+#[derive(Clone, Copy)]
+enum Notification {
+    Info,
+    Error,
+}
+
+#[derive(Default, Clone)]
+struct AppState {
+    build_output: Arc<RwLock<String>>,
+    packages: Arc<RwLock<Vec<String>>>,
+    profiles: Arc<RwLock<Vec<Profile>>>,
+    selected_profile_id: Arc<RwLock<String>>,
+    selected_target: Arc<RwLock<String>>,
+    selected_version: Arc<RwLock<String>>,
+    versions: Arc<RwLock<Vec<String>>>,
+}
+
+impl AppState {
+    fn reset(&self) {
+        if let Ok(mut build_output) = self.build_output.write() {
+            *build_output = String::new();
+        }
+        if let Ok(mut packages) = self.packages.write() {
+            *packages = Vec::new();
+        }
+        if let Ok(mut selected_profile_id) = self.selected_profile_id.write() {
+            *selected_profile_id = String::new();
+        }
+        if let Ok(mut selected_target) = self.selected_target.write() {
+            *selected_target = String::new();
+        }
+    }
+
+    fn update_with(&self, target: String, profile_id: String, original_pkgs: Vec<String>) {
+        if let Ok(mut packages) = self.packages.write() {
+            *packages = original_pkgs;
+        }
+        if let Ok(mut selected_profile_id) = self.selected_profile_id.write() {
+            *selected_profile_id = profile_id;
+        }
+        if let Ok(mut selected_target) = self.selected_target.write() {
+            *selected_target = target;
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct Preset {
+    target: String,
+    profile_id: String,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    extra_image_name: String,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    rootfs_size: String,
+    packages: String,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    disabled_services: String,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    overlay_path: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let backend = i_slint_backend_winit::Backend::new()?;
+    slint::platform::set_platform(Box::new(backend)).map_err(|_| "Failed to set Slint platform")?;
+
+    let ui = AppWindow::new()?;
+    let state = AppState::default();
+    ui.set_busy(true);
+
+    let cache_path = std::env::temp_dir().join("bouwer").join("cache");
+    let client = OpenWrtClient::new(BASE_URL, &cache_path);
+
+    setup_callbacks(&ui, &state, client.clone());
+
+    init(&ui, &state, client.clone());
+
+    ui.run()?;
+    Ok(())
+}
+
+fn setup_callbacks(ui: &AppWindow, state: &AppState, client: OpenWrtClient) {
+    let ui_weak = ui.as_weak();
+
+    ui.on_build_requested({
+        let ui_weak = ui_weak.clone();
+        let state = state.clone();
+        move |packages| on_build(&ui_weak, &state, &packages)
+    });
+
+    ui.on_download_requested({
+        let ui_weak = ui_weak.clone();
+        let state = state.clone();
+        move || on_download(&ui_weak, &state)
+    });
+
+    ui.on_load_preset_requested({
+        let ui_weak = ui_weak.clone();
+        let state = state.clone();
+        move || on_load_preset(&ui_weak, &state)
+    });
+
+    ui.on_save_preset_requested({
+        let ui_weak = ui_weak.clone();
+        move |target,
+              profile_id,
+              extra_image_name,
+              rootfs_size,
+              packages,
+              disabled_services,
+              overlay_path| {
+            on_save_preset(
+                &ui_weak,
+                Preset {
+                    target: target.into(),
+                    profile_id: profile_id.into(),
+                    extra_image_name: extra_image_name.into(),
+                    rootfs_size: rootfs_size.into(),
+                    packages: packages.into(),
+                    disabled_services: disabled_services.into(),
+                    overlay_path: overlay_path.into(),
+                },
+            );
+        }
+    });
+
+    ui.on_open_build_folder_requested({
+        let state = state.clone();
+        move || on_open_build_folder(&state)
+    });
+
+    ui.on_open_overlay_folder_requested({
+        let ui_weak = ui_weak.clone();
+        move || on_open_overlay_folder(&ui_weak)
+    });
+
+    ui.on_packages_edited({
+        let ui_weak = ui_weak.clone();
+        let state = state.clone();
+        // Store the handle to the pending debounce task so we can cancel it if the user types again
+        let debounce_task = Arc::new(RwLock::new(None::<JoinHandle<()>>));
+        move |text| on_packages_edited(&ui_weak, &state, &debounce_task, &text)
+    });
+
+    ui.on_profile_search_edited({
+        let ui_weak = ui_weak.clone();
+        let state = state.clone();
+        move |search| on_profile_search(&ui_weak, &state, &search)
+    });
+
+    ui.on_profile_search_key_pressed({
+        let ui_weak = ui_weak.clone();
+        move |event| on_profile_search_key_pressed(&ui_weak, &event.text)
+    });
+
+    ui.on_profile_selected({
+        let ui_weak = ui_weak.clone();
+        let state = state.clone();
+        move |name| on_profile_selected(&ui_weak, &state, &name)
+    });
+
+    ui.on_show_rcs_toggled({
+        let ui_weak = ui_weak.clone();
+        let state = state.clone();
+        move |show_rcs| on_show_rcs_toggled(&ui_weak, &state, show_rcs)
+    });
+
+    ui.on_version_changed({
+        let ui_weak = ui_weak.clone();
+        let state = state.clone();
+        move |version| on_version_changed(&ui_weak, &state, &client, &version)
+    });
+}
+
+fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &SharedString) {
+    let version = state.selected_version.read().unwrap().clone();
+    let target = state.selected_target.read().unwrap().clone();
+    let profile_id = state.selected_profile_id.read().unwrap().clone();
+    let user_pkgs: Vec<String> = packages
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect();
+    let packages = {
+        let original_pkgs = state.packages.read().unwrap();
+        prepare_package_list(&user_pkgs, &original_pkgs)
+    };
+    let packages = packages.join(" ");
+
+    let (extra_image_name, rootfs_size, disabled_services, overlay_path) = {
+        let ui = ui_weak.upgrade().unwrap();
+        (
+            ui.get_extra_image_name_text(),
+            ui.get_rootfs_size_value(),
+            ui.get_disabled_service_text(),
+            ui.get_overlay_path_text(),
+        )
+    };
+
+    let extra_image_name: String = extra_image_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-')
+        .collect();
+
+    if version.is_empty() || target.is_empty() || profile_id.is_empty() {
+        eprintln!("Cannot build: Version, Target, or Profile ID is missing.");
+        let _ = ui_weak.upgrade_in_event_loop(|ui| {
+            ui.set_busy(false);
+        });
+        return;
+    }
+    let ui_weak = ui_weak.clone();
+    let build_output = state.build_output.clone();
+    tokio::spawn(async move {
+        let msg = "Initializing...\n".to_string();
+        println!("{}", msg.trim());
+        {
+            let build_output = build_output.clone();
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                sync_build_output(&ui, &build_output, msg);
+                ui.set_busy(true);
+                ui.set_progress_visible(true);
+                ui.set_progress_value(0.0);
+            });
+        }
+
+        let temp_base = std::env::temp_dir().join("bouwer");
+        let build_folder_path = temp_base.join("bin").join("targets").join(&target);
+
+        let now = Local::now().format("%Y-%m-%d-%H-%M-%S");
+        let filename = format!("build-{version}-{profile_id}-{now}.log");
+        let log_file_path = build_folder_path.join(filename);
+
+        // Ensure the directory exists
+        let _ = tokio::fs::create_dir_all(&build_folder_path).await;
+
+        // Open the log file for writing
+        let mut log_file = tokio::fs::File::create(&log_file_path)
+            .await
+            .expect("Failed to create build.log");
+
+        let image_tag = get_image_tag(&version, &target);
+        let profile_arg = format!("PROFILE={profile_id}");
+        let extra_image_name_arg = format!("EXTRA_IMAGE_NAME={extra_image_name}");
+        let rootfs_size_arg = format!("ROOTFS_SIZE={rootfs_size}");
+        let packages_arg = format!("PACKAGES={packages}");
+        let disabled_services_arg = format!("DISABLED_SERVICES={disabled_services}");
+
+        let mut container_args = vec!["make", "image", &profile_arg, &packages_arg];
+
+        if !extra_image_name.is_empty() {
+            container_args.push(&extra_image_name_arg);
+        }
+
+        if !rootfs_size.is_empty() {
+            container_args.push(&rootfs_size_arg);
+        }
+
+        if !disabled_services.is_empty() {
+            container_args.push(&disabled_services_arg);
+        }
+
+        if !overlay_path.is_empty() {
+            container_args.push("FILES=/overlay");
+        }
+
+        println!("Version: {version}\nTarget: {target}\nProfile: {profile_id}");
+        println!("Extra image name: {extra_image_name}\nRootFS size: {rootfs_size}");
+        println!("Disabled services: {disabled_services}\nRequested packages: {packages}");
+        println!("Overlay path: {overlay_path}\n");
+
+        let volumes = get_build_volumes(&overlay_path);
+        let mut child = run_container(&image_tag, &container_args, &volumes)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Failed to start build command");
+
+        let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
+
+        let mut cumulative_output = build_output.read().unwrap().clone();
+        let mut last_ui_update = Instant::now();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        let mut needs_update = false;
+        let mut current_progress = 0.0f32;
+
+        loop {
+            let timeout = tokio::time::sleep(Duration::from_millis(50));
+            tokio::pin!(timeout);
+
+            tokio::select! {
+                res = stdout.next_line(), if !stdout_done => {
+                    match res {
+                        Ok(Some(line)) => {
+                            println!("{line}");
+                            AsyncWriteExt::write_all(&mut log_file, line.as_bytes()).await.unwrap();
+                            AsyncWriteExt::write_all(&mut log_file, b"\n").await.unwrap();
+
+                            current_progress = current_progress.max(get_build_progress(&line));
+                            current_progress += 0.0002;
+                            cumulative_output.push_str(&line);
+                            cumulative_output.push('\n');
+                            needs_update = true;
+                        }
+                        Ok(None) => stdout_done = true,
+                        Err(e) => { eprintln!("Stdout read error: {e}"); stdout_done = true; }
+                    }
+                }
+                res = stderr.next_line(), if !stderr_done => {
+                    match res {
+                        Ok(Some(line)) => {
+                            eprintln!("{line}");
+                            AsyncWriteExt::write_all(&mut log_file, line.as_bytes()).await.unwrap();
+                            AsyncWriteExt::write_all(&mut log_file, b"\n").await.unwrap();
+                            current_progress += 0.0002;
+                            cumulative_output.push_str(&line);
+                            cumulative_output.push('\n');
+                            needs_update = true;
+                        }
+                        Ok(None) => stderr_done = true,
+                        Err(e) => { eprintln!("Stderr read error: {e}"); stderr_done = true; }
+                    }
+                }
+                () = &mut timeout, if needs_update => {}
+            }
+
+            if needs_update && last_ui_update.elapsed() >= Duration::from_millis(50) {
+                let cumulative_output = cumulative_output.clone();
+                let store = build_output.clone();
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    sync_build_output(&ui, &store, cumulative_output);
+                    ui.set_progress_value(current_progress);
+                });
+                last_ui_update = Instant::now();
+                needs_update = false;
+            }
+
+            if stdout_done && stderr_done {
+                break;
+            }
+        }
+
+        let _ = child.wait().await;
+        let final_msg = "Build completed.\n";
+        println!("{}", final_msg.trim());
+        cumulative_output.push_str(final_msg);
+        AsyncWriteExt::write_all(&mut log_file, final_msg.as_bytes())
+            .await
+            .unwrap();
+
+        // Final UI sync to ensure the last batch of logs is visible
+        let cumulative_output = cumulative_output.clone();
+        let store = build_output.clone();
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            sync_build_output(&ui, &store, cumulative_output);
+            ui.set_progress_value(1.0);
+            ui.set_progress_visible(false);
+            ui.set_busy(false);
+        });
+    });
+}
+
+fn on_download(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
+    let _ = ui_weak.upgrade_in_event_loop(|ui| {
+        ui.set_busy(true);
+        ui.set_image_exists(false);
+        ui.set_progress_visible(true);
+        ui.set_progress_value(0.0);
+
+        set_notification(Notification::Info, &ui, "");
+    });
+
+    let ui_weak = ui_weak.clone();
+    let state = state.clone();
+    let version = state.selected_version.read().unwrap().clone();
+    let target = state.selected_target.read().unwrap().clone();
+    tokio::spawn(async move {
+        let image_tag = get_image_tag(&version, &target);
+
+        let mut child = pull_image(&image_tag)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("Failed to pull image");
+
+        let _ = child.wait().await;
+
+        let exists = set_image_exists(&ui_weak, &version, &target).await;
+        if exists {
+            fetch_and_update_packages(&ui_weak, state, true).await;
+            ui_weak
+                .upgrade_in_event_loop(move |ui| {
+                    ui.set_progress_visible(false);
+                    ui.set_busy(false);
+                })
+                .unwrap();
+        } else {
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.set_progress_visible(false);
+                ui.set_busy(false);
+
+                let ui_weak = ui.as_weak();
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.invoke_request_profile_search_focus();
+                });
+            });
+        }
+    });
+}
+
+fn on_load_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
+    let _ = ui_weak.upgrade_in_event_loop(|ui| {
+        ui.set_busy(true);
+    });
+
+    let ui_weak = ui_weak.clone();
+    let state = state.clone();
+    tokio::spawn(async move {
+        let picker = rfd::AsyncFileDialog::new()
+            .add_filter("JSON files", &["json"])
+            .set_title("Load Preset")
+            .pick_file();
+
+        let Some(path) = picker.await else {
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.set_busy(false);
+            });
+            return;
+        };
+
+        let _ = ui_weak.upgrade_in_event_loop(|ui| {
+            ui.set_progress_visible(true);
+        });
+
+        let path = PathBuf::from(path);
+        if let Err(e) = load_preset_from_path(&ui_weak, &state, &path).await {
+            eprintln!("Error loading preset: {e}");
+            let msg = format!("{e}");
+            show_error(&ui_weak, &msg, None);
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.set_progress_visible(false);
+                ui.set_busy(false);
+            });
+        }
+    });
+}
+
+fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, preset: Preset) {
+    let filename = if preset.extra_image_name.is_empty() {
+        format!("preset-{}.json", preset.profile_id)
+    } else {
+        format!(
+            "preset-{}-{}.json",
+            preset.profile_id, preset.extra_image_name
+        )
+    };
+
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        ui.set_busy(true);
+    });
+
+    let ui_weak = ui_weak.clone();
+    tokio::spawn(async move {
+        let picker = rfd::AsyncFileDialog::new()
+            .add_filter("JSON files", &["json"])
+            .set_title("Save Preset")
+            .set_file_name(filename)
+            .save_file();
+
+        let Some(path) = picker.await else {
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.set_busy(false);
+            });
+            return;
+        };
+
+        let path = PathBuf::from(path);
+        let text = serde_json::to_string_pretty(&preset).unwrap();
+        if let Err(e) = std::fs::write(&path, text) {
+            eprintln!("Error saving preset {}: {e}", path.display());
+        }
+
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.set_busy(false);
+        });
+    });
+}
+
+fn on_open_build_folder(state: &AppState) {
+    let version = state.selected_version.read().unwrap().clone();
+    let target = state.selected_target.read().unwrap().clone();
+    if version.is_empty() || target.is_empty() {
+        eprintln!("Cannot open folder: Version or Target is missing.");
+        return;
+    }
+    let temp_base = std::env::temp_dir().join("bouwer");
+    let build_folder_path = temp_base.join("bin").join("targets").join(&target);
+    open_dir(&build_folder_path);
+}
+
+fn on_open_overlay_folder(ui_weak: &slint::Weak<AppWindow>) {
+    let _ = ui_weak.upgrade_in_event_loop(|ui| {
+        ui.set_busy(true);
+    });
+
+    let ui_weak = ui_weak.clone();
+    tokio::spawn(async move {
+        let picker = rfd::AsyncFileDialog::new()
+            .set_title("Select Overlay Folder")
+            .pick_folder();
+
+        let Some(path) = picker.await else {
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.set_busy(false);
+            });
+            return;
+        };
+
+        let path_str = path.path().to_string_lossy().to_string();
+        println!("Selected overlay folder: {path_str}");
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.set_overlay_path_text(path_str.into());
+            ui.set_busy(false);
+        });
+    });
+}
+
+fn on_packages_edited(
+    ui_weak: &slint::Weak<AppWindow>,
+    state: &AppState,
+    debounce_task: &Arc<RwLock<Option<JoinHandle<()>>>>,
+    text: &SharedString,
+) {
+    {
+        let text = text.clone();
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.set_packages_text(text);
+        });
+    }
+
+    let mut handle_lock = debounce_task.write().unwrap();
+    if let Some(h) = handle_lock.take() {
+        h.abort();
+    }
+
+    let ui_weak = ui_weak.clone();
+    let state = state.clone();
+    let text = text.clone();
+    *handle_lock = Some(tokio::spawn(async move {
+        // Wait for 500ms of inactivity
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let original = state.packages.read().unwrap().clone();
+        let current_set: HashSet<_> = text.split_whitespace().collect();
+
+        // Identify which original packages are no longer in the user's list
+        let removed: Vec<String> = original
+            .into_iter()
+            .filter(|p| !current_set.contains(p.as_str()))
+            .collect();
+
+        let removed_str = removed.join(" ");
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.set_removed_packages_text(removed_str.into());
+        });
+    }));
+}
+
+fn on_profile_search_key_pressed(
+    ui_weak: &slint::Weak<AppWindow>,
+    event_text: &SharedString,
+) -> bool {
+    let Some(ui) = ui_weak.upgrade() else {
+        return false;
+    };
+    let model = ui.get_profiles();
+    let count = model.row_count();
+    if count == 0 {
+        return false;
+    }
+
+    let mut current = ui.get_current_highlighted_profile_index();
+    let count: i32 = count.try_into().unwrap();
+
+    if *event_text == <Key as Into<SharedString>>::into(Key::DownArrow) {
+        current = (current + 1) % count;
+        ui.set_current_highlighted_profile_index(current);
+        true
+    } else if *event_text == <Key as Into<SharedString>>::into(Key::UpArrow) {
+        current = if current <= 0 { count - 1 } else { current - 1 };
+        ui.set_current_highlighted_profile_index(current);
+        true
+    } else if *event_text == <Key as Into<SharedString>>::into(Key::Return) {
+        if let Some(val) = (current >= 0 && current < count)
+            .then(|| model.row_data(current.try_into().unwrap()))
+            .flatten()
+        {
+            ui.invoke_profile_selected(val);
+            return true;
+        }
+        false
+    } else {
+        false
+    }
+}
+
+fn on_profile_search(ui_weak: &slint::Weak<AppWindow>, state: &AppState, search: &SharedString) {
+    let Some(ui) = ui_weak.upgrade() else { return };
+    reset_profile_info(&ui, state);
+    ui.set_current_highlighted_profile_index(-1);
+    let filtered = if search.chars().count() >= MIN_SEARCH_CHARS {
+        state
+            .profiles
+            .read()
+            .map(|p| filter_profiles(&p, search))
+            .unwrap_or_default()
+            .iter()
+            .map(SharedString::from)
+            .collect::<Vec<_>>()
+    } else {
+        vec![]
+    };
+    sync_build_output(&ui, &state.build_output, String::new());
+    ui.set_profiles(Rc::new(VecModel::from(filtered)).into());
+}
+
+fn on_profile_selected(ui_weak: &slint::Weak<AppWindow>, state: &AppState, name: &SharedString) {
+    let Some(ui) = ui_weak.upgrade() else {
+        return;
+    };
+    let profile = state
+        .profiles
+        .read()
+        .ok()
+        .and_then(|p| find_profile_by_display_name(&p, name));
+    let Some(profile) = profile else {
+        return;
+    };
+    ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
+    ui.set_search_text(name.clone());
+    if let Ok(mut p_id) = state.selected_profile_id.write() {
+        p_id.clone_from(&profile.id);
+    }
+    if let Ok(mut t) = state.selected_target.write() {
+        t.clone_from(&profile.target);
+    }
+    let state_fetch = state.clone();
+    let version = state.selected_version.read().unwrap().clone();
+    ui.set_selected_model(get_all_models_string(&profile).as_str().into());
+    ui.set_selected_id(profile.id.as_str().into());
+    ui.set_selected_target(profile.target.as_str().into());
+    sync_build_output(&ui, &state.build_output, String::new());
+
+    let ui_weak = ui_weak.clone();
+    tokio::spawn(async move {
+        let exists = set_image_exists(&ui_weak, &version, &profile.target).await;
+        if exists {
+            fetch_and_update_packages(&ui_weak, state_fetch, false).await;
+        } else {
+            let _ = ui_weak.upgrade_in_event_loop(|ui| {
+                ui.set_busy(false);
+
+                let ui_weak = ui.as_weak();
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.invoke_request_profile_search_focus();
+                });
+            });
+        }
+    });
+}
+
+fn on_show_rcs_toggled(ui_weak: &slint::Weak<AppWindow>, state: &AppState, show_rcs: bool) {
+    let Ok(versions) = state.versions.read() else {
+        return;
+    };
+    let Some(ui) = ui_weak.upgrade() else {
+        return;
+    };
+    let filtered = filter_versions(&versions, show_rcs);
+    ui.set_versions(Rc::new(VecModel::from(filtered)).into());
+
+    if !show_rcs && state.selected_version.read().unwrap().contains("-rc") {
+        ui.set_search_text("".into());
+        ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
+        reset_profile_info(&ui, state);
+        if let Ok(mut v) = state.selected_version.write() {
+            v.clone_from(versions.first().unwrap_or(&String::new()));
+        }
+    }
+}
+
+fn on_version_changed(
+    ui_weak: &slint::Weak<AppWindow>,
+    state: &AppState,
+    client: &OpenWrtClient,
+    version: &SharedString,
+) {
+    let version = version.to_string();
+    if let Ok(mut v) = state.selected_version.write() {
+        v.clone_from(&version);
+    }
+    if let Ok(mut p_id) = state.selected_profile_id.write() {
+        *p_id = String::new();
+    }
+
+    let _ = ui_weak.upgrade_in_event_loop({
+        let state = state.clone();
+        move |ui| {
+            ui.set_busy(true);
+            ui.set_search_text("".into());
+            reset_profile_info(&ui, &state);
+        }
+    });
+
+    let client = client.clone();
+    let state = state.clone();
+    let ui_weak = ui_weak.clone();
+    tokio::spawn(async move {
+        match client.fetch_profiles(&version).await {
+            Ok(profiles) => {
+                if let Ok(mut store) = state.profiles.write() {
+                    *store = profiles;
+                }
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    sync_build_output(&ui, &state.build_output, String::new());
+                    ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
+                    ui.set_busy(false);
+
+                    let ui_weak = ui.as_weak();
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.invoke_request_profile_search_focus();
+                    });
+                });
+            }
+            Err(e) => {
+                let msg = format!("Failed to fetch profiles for version {version}");
+                show_error(&ui_weak, &msg, Some(e));
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_profiles_fetch_failed(true);
+                    ui.set_busy(false);
+                    ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into()); // Clear profiles even on error
+                });
+            }
+        }
+    });
+}
+
+fn init(ui: &AppWindow, state: &AppState, client: OpenWrtClient) {
+    let ui_weak = ui.as_weak();
+    let state = state.clone();
+    let show_rcs = ui.get_show_rcs();
+    tokio::spawn(async move {
+        if !podman_available().await {
+            show_error(
+                &ui_weak,
+                "Podman not found. Please install Podman and ensure it is in your PATH to use Bouwer.",
+                None,
+            );
+            return;
+        }
+
+        let versions_res = client.fetch_versions().await;
+        if let Err(e) = versions_res {
+            show_error(&ui_weak, "Initial load error", Some(e));
+            return;
+        }
+
+        let versions = versions_res.unwrap();
+        if let Ok(mut raw) = state.versions.write() {
+            raw.clone_from(&versions);
+        }
+
+        let filtered = filter_versions(&versions, show_rcs);
+        let Some(first_version) = filtered.first().map(ToString::to_string) else {
+            let _ = ui_weak.upgrade_in_event_loop(|ui| {
+                set_notification(Notification::Info, &ui, "No OpenWrt versions found.");
+            });
+            return; // No versions, nothing to load
+        };
+
+        if let Ok(mut v) = state.selected_version.write() {
+            v.clone_from(&first_version);
+        }
+
+        let filtered = filtered.clone();
+        let build_output = state.build_output.clone();
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.set_versions(Rc::new(VecModel::from(filtered)).into());
+            sync_build_output(&ui, &build_output, String::new());
+            ui.set_busy(true); // Still busy loading profiles
+        });
+
+        let profiles_res = client.fetch_profiles(&first_version).await;
+        match profiles_res {
+            Ok(profiles) => {
+                if let Ok(mut store) = state.profiles.write() {
+                    *store = profiles;
+                }
+            }
+            Err(e) => {
+                let _ = ui_weak.upgrade_in_event_loop(|ui| {
+                    ui.set_profiles_fetch_failed(true);
+                    ui.set_busy(false);
+                });
+                show_error(&ui_weak, "Initial load error", Some(e));
+                return;
+            }
+        }
+
+        // Always set busy to false and clear profiles at the end of the initial
+        // load task
+        let _ = ui_weak.upgrade_in_event_loop(|ui| {
+            ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
+            ui.set_busy(false);
+
+            let ui_weak = ui.as_weak();
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.invoke_request_profile_search_focus();
+            });
+        });
+    });
+}
+
+async fn fetch_and_update_packages(
+    ui_weak: &slint::Weak<AppWindow>,
+    state: AppState,
+    already_busy: bool,
+) {
+    if !already_busy {
+        let _ = ui_weak.upgrade_in_event_loop(|ui| {
+            ui.set_busy(true);
+            ui.set_progress_visible(true);
+        });
+    }
+
+    let version = state.selected_version.read().unwrap().clone();
+    let target = state.selected_target.read().unwrap().clone();
+    let profile_id = state.selected_profile_id.read().unwrap().clone();
+
+    let mut packages = fetch_packages_for_profile(&version, &target, &profile_id)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Error fetching packages: {e}");
+            EXTRA_PACKAGES.to_string()
+        });
+
+    if !packages.is_empty() {
+        packages = packages + " " + EXTRA_PACKAGES;
+    }
+
+    let mut pkgs_vec = packages
+        .split_whitespace()
+        .map(String::from)
+        .collect::<Vec<_>>();
+    pkgs_vec.sort_unstable();
+    pkgs_vec.dedup();
+
+    if let Ok(mut store) = state.packages.write() {
+        store.clone_from(&pkgs_vec);
+    }
+
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        let packages_str = pkgs_vec.join(" ");
+
+        ui.set_packages_text(packages_str.into());
+        ui.set_removed_packages_text(SharedString::new());
+
+        if !already_busy {
+            // TODO: do this outside of this?
+            ui.set_progress_visible(false);
+            ui.set_busy(false);
+        }
+
+        let ui_weak = ui.as_weak();
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.invoke_request_profile_search_focus();
+        });
+    });
+}
+
+/// Get default and device-specific packages from the image builder
+async fn fetch_packages_for_profile(
+    version: &str,
+    target: &str,
+    profile_id: &str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let image_tag = get_image_tag(version, target);
+
+    println!("Fetching package info for {profile_id} from {image_tag}");
+    let volumes = vec![];
+    let output = run_container(&image_tag, &["make", "info"], &volumes)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        return Err(format!("Podman exited with status {}", output.status).into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut default_pkgs = String::new();
+    let mut device_pkgs = String::new();
+    let mut in_profile_block = false;
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if let Some(pkgs) = trimmed.strip_prefix("Default Packages:") {
+            default_pkgs = pkgs.trim().to_string();
+        } else if trimmed.starts_with(&format!("{profile_id}:")) {
+            in_profile_block = true;
+        } else if in_profile_block && let Some(pkgs) = trimmed.strip_prefix("Packages:") {
+            device_pkgs = pkgs.trim().to_string();
+            break; // Found both, exit
+        }
+    }
+
+    Ok(format!("{default_pkgs} {device_pkgs}").trim().to_string())
+}
+
+fn filter_versions(versions: &[String], show_rcs: bool) -> Vec<SharedString> {
+    versions
+        .iter()
+        .filter(|v| {
+            (show_rcs || !v.contains("-rc"))
+                && (v
+                    .split('.')
+                    .next()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .is_some_and(|m| m >= MIN_SERIES))
+        })
+        .map(SharedString::from)
+        .collect()
+}
+
+fn get_build_progress(line: &str) -> f32 {
+    // Update progress based on build milestones
+    if line.starts_with("Generate local signing keys") {
+        0.1
+    } else if line.starts_with("Building images for") {
+        0.2
+    } else if line.starts_with("Building package index") {
+        0.3
+    } else if line.starts_with("Installing packages") {
+        0.4
+    } else if line.starts_with("Finalizing root filesystem") {
+        0.7
+    } else if line.starts_with("Calculating checksums") {
+        0.9
+    } else {
+        0.0
+    }
+}
+
+fn get_build_volumes(overlay_path: &str) -> Vec<Volume> {
+    let temp_base = std::env::temp_dir().join("bouwer");
+    let bin_path = temp_base.join("bin");
+    let dl_path = temp_base.join("dl");
+    let mut volumes = vec![
+        Volume {
+            src: bin_path.display().to_string(),
+            dest: "/builder/bin".to_string(),
+        },
+        Volume {
+            src: dl_path.display().to_string(),
+            dest: "/builder/dl".to_string(),
+        },
+    ];
+
+    if !overlay_path.is_empty() {
+        volumes.push(Volume {
+            src: overlay_path.to_string(),
+            dest: "/overlay".to_string(),
+        });
+    }
+
+    volumes
+}
+
+fn get_image_tag(version: &str, target: &str) -> String {
+    let target_slug = target.replace('/', "-");
+    let image_tag = format!("{IMAGE_NAME}:{target_slug}-{version}");
+    image_tag
+}
+
+async fn load_preset_from_path(
+    ui_weak: &slint::Weak<AppWindow>,
+    state: &AppState,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let content = tokio::fs::read_to_string(&path).await?;
+    let preset: Preset = serde_json::from_str(&content)?;
+    let target_id = &preset.target;
+    let profile_id = &preset.profile_id;
+
+    let found = {
+        let profiles = state
+            .profiles
+            .read()
+            .map_err(|_| "Profiles lock poisoned")?;
+        profiles
+            .iter()
+            .find(|p| &p.id == profile_id && &p.target == target_id)
+            .map(|p| {
+                let name = format_profile(p)
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| p.id.clone());
+                (name, get_all_models_string(p), p.target.clone())
+            })
+    };
+
+    let (name, model, target) = found.ok_or_else(|| {
+        format!("Profile '{profile_id}' for target '{target_id}' not found in current version")
+    })?;
+
+    ui_weak.upgrade_in_event_loop({
+        let target = target.clone();
+        let profile_id = preset.profile_id.clone();
+        let overlay_path = preset.overlay_path.clone();
+        move |ui| {
+            ui.set_search_text(name.into());
+            ui.set_selected_id(profile_id.clone().into());
+            ui.set_selected_model(model.into());
+            ui.set_selected_target(target.clone().into());
+            ui.set_overlay_path_text(overlay_path.into());
+            ui.set_packages_text(SharedString::new());
+            ui.set_removed_packages_text(SharedString::new());
+        }
+    })?;
+
+    let version = state
+        .selected_version
+        .read()
+        .map_err(|_| "Version lock poisoned")?
+        .clone();
+
+    let exists = set_image_exists(ui_weak, &version, &target).await;
+    if !exists {
+        let _ = ui_weak.upgrade_in_event_loop(|ui| {
+            ui.set_progress_visible(false);
+            ui.set_busy(false);
+        });
+        return Ok(());
+    }
+
+    // Load original packages for comparison
+    let fetched_pkgs = fetch_packages_for_profile(&version, &target, profile_id)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Error fetching packages for preset: {e}");
+            EXTRA_PACKAGES.to_string()
+        });
+
+    // TODO: Disable build when there are no packages
+    let packages_source = if fetched_pkgs.is_empty() {
+        EXTRA_PACKAGES.to_string()
+    } else {
+        fetched_pkgs + " " + EXTRA_PACKAGES
+    };
+
+    let mut original_pkgs = packages_source
+        .split_whitespace()
+        .map(String::from)
+        .collect::<Vec<_>>();
+    original_pkgs.sort_unstable();
+    original_pkgs.dedup();
+
+    let current_set: HashSet<_> = preset.packages.split_whitespace().collect();
+    let removed: Vec<String> = original_pkgs
+        .iter()
+        .filter(|p| !current_set.contains(p.as_str()))
+        .cloned()
+        .collect();
+    let removed_str = removed.join(" ");
+
+    let target = target.clone();
+    let profile_id: String = preset.profile_id.clone();
+    let original_pkgs = original_pkgs.clone();
+    let state = state.clone();
+
+    ui_weak.upgrade_in_event_loop(move |ui| {
+        ui.set_disabled_service_text(preset.disabled_services.into());
+        ui.set_extra_image_name_text(preset.extra_image_name.into());
+        ui.set_overlay_path_text(preset.overlay_path.into());
+        ui.set_packages_text(preset.packages.into());
+        ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
+        ui.set_progress_visible(false);
+        ui.set_rootfs_size_value(preset.rootfs_size.into());
+        ui.set_removed_packages_text(removed_str.into());
+        ui.set_busy(false);
+        set_notification(Notification::Info, &ui, "");
+
+        state.update_with(target, profile_id, original_pkgs);
+
+        let ui_weak = ui.as_weak();
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.invoke_request_profile_search_focus();
+        });
+    })?;
+
+    Ok(())
+}
+
+fn open_dir(path: &Path) {
+    #[cfg(target_os = "linux")]
+    {
+        eprintln!("Attempting to open folder: {}", path.display());
+        let _ = Command::new("xdg-open")
+            .arg(path.as_os_str())
+            .spawn()
+            .map_err(|e| eprintln!("Failed to open folder on Linux: {e}"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        eprintln!("Attempting to open folder: {}", path.display());
+        let _ = Command::new("open")
+            .arg(path.as_os_str())
+            .spawn()
+            .map_err(|e| eprintln!("Failed to open folder on macOS: {e}"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let path_str = path.to_string_lossy();
+        let path = path_str
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&path_str)
+            .replace('/', "\\");
+
+        eprintln!("Attempting to open folder: {path}");
+        let _ = Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map_err(|e| eprintln!("Failed to open folder: {e}"));
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        eprintln!("Opening file explorer is not supported on this OS.");
+    }
+}
+
+/// Compares current package list with the original profile defaults.
+/// Any default package missing from the user list is prefixed with `-` to
+/// ensure removal.
+fn prepare_package_list(user_pkgs: &[String], original_pkgs: &[String]) -> Vec<String> {
+    let user_set: HashSet<&str> = user_pkgs.iter().map(AsRef::as_ref).collect();
+    let mut user_pkgs = user_pkgs.to_vec();
+
+    for pkg in original_pkgs {
+        if !user_set.contains(pkg.as_str()) {
+            user_pkgs.push(format!("-{pkg}"));
+        }
+    }
+
+    user_pkgs
+}
+
+/// Resets the profile details section to empty/default values
+fn reset_profile_info(ui: &AppWindow, state: &AppState) {
+    ui.set_disabled_service_text(SharedString::new());
+    ui.set_extra_image_name_text(SharedString::new());
+    ui.set_overlay_path_text(SharedString::new());
+    ui.set_image_exists(false);
+    ui.set_packages_text(SharedString::new());
+    ui.set_profiles_fetch_failed(false);
+    ui.set_progress_visible(false);
+    ui.set_removed_packages_text(SharedString::new());
+    ui.set_rootfs_size_value(SharedString::new());
+    ui.set_selected_id(SharedString::new());
+    ui.set_selected_model(SharedString::new());
+    ui.set_selected_target(SharedString::new());
+
+    state.reset();
+
+    set_notification(Notification::Info, ui, "");
+}
+
+async fn set_image_exists(ui_weak: &slint::Weak<AppWindow>, version: &str, target: &str) -> bool {
+    println!("Checking if image exists: {version} {target}");
+
+    let image_tag = get_image_tag(version, target);
+    let exists = image_exists(&image_tag).await;
+
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        ui.set_image_exists(exists);
+        set_notification(
+            Notification::Info,
+            &ui,
+            if exists {
+                ""
+            } else {
+                "Image builder not found locally. Please download it first."
+            },
+        );
+    });
+
+    exists
+}
+
+fn set_notification(t: Notification, ui: &AppWindow, text: &str) {
+    let is_error = match t {
+        Notification::Error => {
+            if !text.is_empty() {
+                eprintln!("Error: {text}");
+            }
+            true
+        }
+        Notification::Info => {
+            if !text.is_empty() {
+                println!("{text}");
+            }
+            false
+        }
+    };
+
+    ui.set_notification_is_error(is_error);
+    ui.set_notification(text.into());
+}
+
+fn show_error(
+    ui_weak: &slint::Weak<AppWindow>,
+    msg: &str,
+    e: Option<Box<dyn std::error::Error + Send + Sync>>,
+) {
+    let full_message = if let Some(e) = e {
+        format!("{msg}: {e}")
+    } else {
+        msg.to_string()
+    };
+    eprintln!("{full_message}");
+
+    let msg = msg.to_string();
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        set_notification(Notification::Error, &ui, &msg);
+    });
+}
+
+/// Synchronizes build logs between the background store and the UI property
+fn sync_build_output(ui: &AppWindow, store: &Arc<RwLock<String>>, text: String) {
+    if let Ok(mut output) = store.write() {
+        output.clone_from(&text);
+    }
+    ui.set_build_output(text.into());
+}
