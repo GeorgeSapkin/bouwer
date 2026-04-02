@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use chrono::Local;
-use serde::{Deserialize, Serialize};
 use slint::platform::Key;
 use slint::{Model, SharedString, VecModel};
 use std::collections::HashSet;
@@ -16,12 +15,16 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
+mod cache;
 mod client;
 mod containers;
+mod data;
 mod profiles;
 
-use client::{OpenWrtClient, Profile};
+use cache::MetadataCache;
+use client::OpenWrtClient;
 use containers::{Volume, image_exists, podman_available, pull_image, run_container};
+use data::{Preset, Profile};
 use profiles::{
     filter_profiles, find_profile_by_display_name, format_profile, get_all_models_string,
 };
@@ -87,22 +90,6 @@ impl AppState {
     }
 }
 
-#[derive(Serialize, Deserialize, Default)]
-struct Preset {
-    release_series: String,
-    target: String,
-    profile_id: String,
-    #[serde(skip_serializing_if = "String::is_empty", default)]
-    extra_image_name: String,
-    #[serde(skip_serializing_if = "String::is_empty", default)]
-    rootfs_size: String,
-    packages: String,
-    #[serde(skip_serializing_if = "String::is_empty", default)]
-    disabled_services: String,
-    #[serde(skip_serializing_if = "String::is_empty", default)]
-    overlay_path: String,
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = i_slint_backend_winit::Backend::new()?;
@@ -113,9 +100,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_busy(true);
 
     let cache_path = std::env::temp_dir().join("bouwer").join("cache");
-    let client = OpenWrtClient::new(BASE_URL, &cache_path);
+    let cache = MetadataCache::new(&cache_path);
+    let client = OpenWrtClient::new(BASE_URL, cache.clone());
 
-    setup_callbacks(&ui, &state, client.clone());
+    setup_callbacks(&ui, &state, client.clone(), &cache);
 
     init(&ui, &state, client.clone());
 
@@ -123,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn setup_callbacks(ui: &AppWindow, state: &AppState, client: OpenWrtClient) {
+fn setup_callbacks(ui: &AppWindow, state: &AppState, client: OpenWrtClient, cache: &MetadataCache) {
     let ui_weak = ui.as_weak();
 
     ui.on_build_requested({
@@ -135,13 +123,15 @@ fn setup_callbacks(ui: &AppWindow, state: &AppState, client: OpenWrtClient) {
     ui.on_download_requested({
         let ui_weak = ui_weak.clone();
         let state = state.clone();
-        move || on_download(&ui_weak, &state)
+        let cache = cache.clone();
+        move || on_download(&ui_weak, &state, &cache)
     });
 
     ui.on_load_preset_requested({
         let ui_weak = ui_weak.clone();
         let state = state.clone();
-        move || on_load_preset(&ui_weak, &state)
+        let cache = cache.clone();
+        move || on_load_preset(&ui_weak, &state, &cache)
     });
 
     ui.on_save_preset_requested({
@@ -203,7 +193,8 @@ fn setup_callbacks(ui: &AppWindow, state: &AppState, client: OpenWrtClient) {
     ui.on_profile_selected({
         let ui_weak = ui_weak.clone();
         let state = state.clone();
-        move |name| on_profile_selected(&ui_weak, &state, &name)
+        let cache = cache.clone();
+        move |name| on_profile_selected(&ui_weak, &state, &cache, &name)
     });
 
     ui.on_show_rcs_toggled({
@@ -394,7 +385,7 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
     });
 }
 
-fn on_download(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
+fn on_download(ui_weak: &slint::Weak<AppWindow>, state: &AppState, cache: &MetadataCache) {
     let _ = ui_weak.upgrade_in_event_loop(|ui| {
         ui.set_busy(true);
         ui.set_build_status(SharedString::from("Downloading image builder"));
@@ -407,6 +398,7 @@ fn on_download(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
 
     let ui_weak = ui_weak.clone();
     let state = state.clone();
+    let cache = cache.clone();
     let version = state.selected_version.read().unwrap().clone();
     let target = state.selected_target.read().unwrap().clone();
     tokio::spawn(async move {
@@ -422,7 +414,7 @@ fn on_download(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
 
         let exists = set_image_exists(&ui_weak, &version, &target).await;
         if exists {
-            fetch_and_update_packages(&ui_weak, state, true).await;
+            fetch_and_update_packages(&ui_weak, state, cache, true).await;
             ui_weak
                 .upgrade_in_event_loop(move |ui| {
                     ui.set_build_status(SharedString::new());
@@ -445,13 +437,14 @@ fn on_download(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
     });
 }
 
-fn on_load_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
+fn on_load_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState, cache: &MetadataCache) {
     let _ = ui_weak.upgrade_in_event_loop(|ui| {
         ui.set_busy(true);
     });
 
     let ui_weak = ui_weak.clone();
     let state = state.clone();
+    let cache = cache.clone();
     tokio::spawn(async move {
         let picker = rfd::AsyncFileDialog::new()
             .add_filter("JSON files", &["json"])
@@ -471,7 +464,7 @@ fn on_load_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
         });
 
         let path = PathBuf::from(path);
-        if let Err(e) = load_preset_from_path(&ui_weak, &state, &path).await {
+        if let Err(e) = load_preset_from_path(&ui_weak, &state, &path, cache).await {
             eprintln!("Error loading preset: {e}");
             let msg = format!("{e}");
             show_error(&ui_weak, &msg, None);
@@ -664,7 +657,12 @@ fn on_profile_search(ui_weak: &slint::Weak<AppWindow>, state: &AppState, search:
     ui.set_profiles(Rc::new(VecModel::from(filtered)).into());
 }
 
-fn on_profile_selected(ui_weak: &slint::Weak<AppWindow>, state: &AppState, name: &SharedString) {
+fn on_profile_selected(
+    ui_weak: &slint::Weak<AppWindow>,
+    state: &AppState,
+    cache: &MetadataCache,
+    name: &SharedString,
+) {
     let Some(ui) = ui_weak.upgrade() else {
         return;
     };
@@ -684,17 +682,18 @@ fn on_profile_selected(ui_weak: &slint::Weak<AppWindow>, state: &AppState, name:
     if let Ok(mut t) = state.selected_target.write() {
         t.clone_from(&profile.target);
     }
-    let state_fetch = state.clone();
     let version = state.selected_version.read().unwrap().clone();
     ui.set_selected_model(get_all_models_string(&profile).as_str().into());
     ui.set_selected_id(profile.id.as_str().into());
     ui.set_selected_target(profile.target.as_str().into());
 
     let ui_weak = ui_weak.clone();
+    let state = state.clone();
+    let cache = cache.clone();
     tokio::spawn(async move {
         let exists = set_image_exists(&ui_weak, &version, &profile.target).await;
         if exists {
-            fetch_and_update_packages(&ui_weak, state_fetch, false).await;
+            fetch_and_update_packages(&ui_weak, state, cache, false).await;
         } else {
             let _ = ui_weak.upgrade_in_event_loop(|ui| {
                 ui.set_busy(false);
@@ -860,6 +859,7 @@ fn init(ui: &AppWindow, state: &AppState, client: OpenWrtClient) {
 async fn fetch_and_update_packages(
     ui_weak: &slint::Weak<AppWindow>,
     state: AppState,
+    cache: MetadataCache,
     already_busy: bool,
 ) {
     if !already_busy {
@@ -873,7 +873,7 @@ async fn fetch_and_update_packages(
     let target = state.selected_target.read().unwrap().clone();
     let profile_id = state.selected_profile_id.read().unwrap().clone();
 
-    let mut packages = fetch_packages_for_profile(&version, &target, &profile_id)
+    let mut packages = fetch_packages_for_profile(&cache, &version, &target, &profile_id)
         .await
         .unwrap_or_else(|e| {
             eprintln!("Error fetching packages: {e}");
@@ -916,12 +916,16 @@ async fn fetch_and_update_packages(
 
 /// Get default and device-specific packages from the image builder
 async fn fetch_packages_for_profile(
+    cache: &MetadataCache,
     version: &str,
     target: &str,
     profile_id: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let image_tag = get_image_tag(version, target);
+    if let Some(packages) = cache.get_packages(version, target, profile_id).await {
+        return Ok(packages);
+    }
 
+    let image_tag = get_image_tag(version, target);
     println!("Fetching package info for {profile_id} from {image_tag}");
     let volumes = vec![];
     let output = run_container(&image_tag, &["make", "info"], &volumes)
@@ -949,7 +953,11 @@ async fn fetch_packages_for_profile(
         }
     }
 
-    Ok(format!("{default_pkgs} {device_pkgs}").trim().to_string())
+    let result = format!("{default_pkgs} {device_pkgs}").trim().to_string();
+    cache
+        .store_packages(version, target, profile_id, &result)
+        .await;
+    Ok(result)
 }
 
 fn filter_versions(versions: &[String], show_rcs: bool) -> Vec<SharedString> {
@@ -1018,6 +1026,7 @@ async fn load_preset_from_path(
     ui_weak: &slint::Weak<AppWindow>,
     state: &AppState,
     path: &Path,
+    cache: MetadataCache,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let content = tokio::fs::read_to_string(&path).await?;
     let preset: Preset = serde_json::from_str(&content)?;
@@ -1079,7 +1088,7 @@ async fn load_preset_from_path(
     }
 
     // Load original packages for comparison
-    let fetched_pkgs = fetch_packages_for_profile(&version, &target, profile_id)
+    let fetched_pkgs = fetch_packages_for_profile(&cache, &version, &target, profile_id)
         .await
         .unwrap_or_else(|e| {
             eprintln!("Error fetching packages for preset: {e}");

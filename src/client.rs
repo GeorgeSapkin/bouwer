@@ -2,47 +2,22 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-
-#[derive(Deserialize)]
-pub struct OpenWrtVersions {
-    pub versions_list: Vec<String>,
-}
-
-#[derive(Deserialize)]
-pub struct OpenWrtOverview {
-    pub profiles: Vec<Profile>,
-}
-
-#[derive(Deserialize, Serialize, Clone)]
-pub struct ProfileTitle {
-    pub model: Option<String>,
-    pub vendor: Option<String>,
-    pub variant: Option<String>,
-    pub title: Option<String>,
-}
-
-#[derive(Deserialize, Serialize, Clone)]
-pub struct Profile {
-    pub id: String,
-    pub titles: Vec<ProfileTitle>,
-    pub target: String,
-}
+use crate::cache::MetadataCache;
+use crate::data::{OpenWrtOverview, OpenWrtVersions, Profile};
 
 pub const USER_AGENT: &str = "BouwerOpenWrtFetcher/1.0";
 
 #[derive(Clone)]
 pub struct OpenWrtClient {
     base_url: String,
-    cache_path: PathBuf,
+    cache: MetadataCache,
 }
 
 impl OpenWrtClient {
-    pub fn new(base_url: &str, cache_path: &Path) -> Self {
+    pub fn new(base_url: &str, cache: MetadataCache) -> Self {
         Self {
             base_url: base_url.to_string(),
-            cache_path: cache_path.to_path_buf(),
+            cache,
         }
     }
 
@@ -50,12 +25,7 @@ impl OpenWrtClient {
         &self,
         version: &str,
     ) -> Result<Vec<Profile>, Box<dyn std::error::Error + Send + Sync>> {
-        let cache_file = self.cache_path.join(format!("profiles-{version}.json"));
-
-        if let Ok(content) = tokio::fs::read_to_string(&cache_file).await
-            && let Ok(profiles) = serde_json::from_str::<Vec<Profile>>(&content)
-        {
-            println!("Using cached profiles from {}", cache_file.display());
+        if let Some(profiles) = self.cache.get_profiles(version).await {
             return Ok(profiles);
         }
 
@@ -72,11 +42,7 @@ impl OpenWrtClient {
         })
         .await??;
 
-        let _ = tokio::fs::create_dir_all(&self.cache_path).await;
-        if let Ok(content) = serde_json::to_string(&profiles) {
-            println!("Caching profiles to {}", cache_file.display());
-            let _ = tokio::fs::write(&cache_file, content).await;
-        }
+        self.cache.store_profiles(version, &profiles).await;
 
         Ok(profiles)
     }

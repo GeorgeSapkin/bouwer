@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::client::{Profile, ProfileTitle};
+use crate::data::{Profile, ProfileTitle};
 
 pub fn filter_profiles(profiles: &[Profile], query: &str) -> Vec<String> {
     let query = query.trim().to_lowercase();
