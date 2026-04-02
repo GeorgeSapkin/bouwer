@@ -5,6 +5,7 @@
 import {
     Button,
     ComboBox,
+    GroupBox,
     HorizontalBox,
     LineEdit,
     ListView,
@@ -67,74 +68,125 @@ export component AppWindow inherits Window {
 
     title: "Bouwer - OpenWrt Firmware Builder";
     min-width: 700px;
-    min-height: 800px;
+    min-height: 700px;
 
-    VerticalBox {
-        spacing: 10px;
+    notification_rect := Rectangle {
+        height: 80px;
+        opacity: 0.0;
+        clip: true;
+        y: -80px;
+        z: 2;
 
-        Rectangle {
-            background: #e1f5fe;
-            border-color: #03a9f4;
-            border-width: 1px;
-            border-radius: 4px;
-            height: 0px;
-            opacity: 0.0;
-            clip: true;
+        VerticalBox {
+            padding-bottom: 20px;
 
-            HorizontalBox {
-                padding-left: 15px;
-                padding-right: 15px;
-                notification_text := Text {
-                    text: notification;
-                    color: #01579b;
-                    vertical-alignment: center;
-                    font-size: 14px;
-                    horizontal-stretch: 1;
+            inner_notification_rect := Rectangle {
+                background: transparent;
+                border-color: transparent;
+                border-width: 1px;
+                border-radius: 4px;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 8px;
+                drop-shadow-color: Palette.color-scheme == ColorScheme.dark ? rgba(0, 0, 0, 0.26) : rgba(0, 0, 0, 0.14);
+
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
                 }
 
-                close_icon := Text {
-                    text: "🗙";
-                    color: #01579b;
-                    vertical-alignment: center;
-                    font-size: 18px;
-                    TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            notification = "";
+                HorizontalBox {
+                    padding-left: 15px;
+                    padding-right: 15px;
+                    notification_text := Text {
+                        text: notification;
+                        color: transparent;
+                        vertical-alignment: center;
+                        font-size: 14px;
+                        horizontal-stretch: 1;
+                    }
+
+                    close_icon := Text {
+                        text: "🗙";
+                        color: transparent;
+                        vertical-alignment: center;
+                        font-size: 18px;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                notification = "";
+                            }
                         }
                     }
                 }
             }
-
-            states [
-                error when notification != "" && notification_is_error: {
-                    background: #ffebee;
-                    border-color: #f44336;
-                    notification_text.color: #b71c1c;
-                    close_icon.color: #b71c1c;
-                    opacity: 1.0;
-                    height: 50px;
-                    in { animate opacity, height { duration: 250ms; } }
-                    out { animate opacity, height { duration: 250ms; } }
-                }
-                warning when notification != "" && notification_is_warning: {
-                    background: #fff9c4;
-                    border-color: #fbc02d;
-                    notification_text.color: #f57f17;
-                    close_icon.color: #f57f17;
-                    opacity: 1.0;
-                    height: 50px;
-                    in { animate opacity, height { duration: 250ms; } }
-                    out { animate opacity, height { duration: 250ms; } }
-                }
-                info when notification != "": {
-                    opacity: 1.0;
-                    height: 50px;
-                    in { animate opacity, height { duration: 250ms; } }
-                    out { animate opacity, height { duration: 250ms; } }
-                }
-            ]
         }
+
+        states [
+            error when notification != "" && notification_is_error: {
+                inner_notification_rect.background: #ffebee;
+                inner_notification_rect.border-color: #f44336;
+                notification_text.color: #b71c1c;
+                close_icon.color: #b71c1c;
+                opacity: 1.0;
+                y: 0px;
+                in {
+                    animate opacity, y, inner_notification_rect.background, inner_notification_rect.border-color, notification_text.color, close_icon.color {
+                        duration: 250ms;
+                        easing: ease-out;
+                    }
+                }
+                out {
+                    animate opacity, y, inner_notification_rect.background, inner_notification_rect.border-color, notification_text.color, close_icon.color {
+                        duration: 250ms;
+                        easing: ease-out;
+                    }
+                }
+            }
+            warning when notification != "" && notification_is_warning: {
+                inner_notification_rect.background: #fff9c4;
+                inner_notification_rect.border-color: #fbc02d;
+                notification_text.color: #f57f17;
+                close_icon.color: #f57f17;
+                opacity: 1.0;
+                y: 0px;
+                in {
+                    animate opacity, y, inner_notification_rect.background, inner_notification_rect.border-color, notification_text.color, close_icon.color {
+                        duration: 250ms;
+                        easing: ease-out;
+                    }
+                }
+                out {
+                    animate opacity, y, inner_notification_rect.background, inner_notification_rect.border-color, notification_text.color, close_icon.color {
+                        duration: 250ms;
+                        easing: ease-out;
+                    }
+                }
+            }
+            info when notification != "": {
+                inner_notification_rect.background: #e1f5fe;
+                inner_notification_rect.border-color: #03a9f4;
+                notification_text.color: #01579b;
+                close_icon.color: #01579b;
+                opacity: 1.0;
+                y: 0px;
+                in {
+                    animate opacity, y, inner_notification_rect.background, inner_notification_rect.border-color, notification_text.color, close_icon.color {
+                        duration: 250ms;
+                        easing: ease-out;
+                    }
+                }
+                out {
+                    animate opacity, y, inner_notification_rect.background, inner_notification_rect.border-color, notification_text.color, close_icon.color {
+                        duration: 250ms;
+                        easing: ease-out;
+                    }
+                }
+            }
+        ]
+    }
+
+    VerticalBox {
+        spacing: 10px;
 
         HorizontalBox {
             padding: 0px;
