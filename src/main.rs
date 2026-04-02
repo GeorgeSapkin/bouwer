@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::task::JoinHandle;
@@ -34,6 +34,16 @@ const IMAGE_NAME: &str = "openwrt/imagebuilder";
 const MIN_SEARCH_CHARS: usize = 3;
 const MIN_SERIES: usize = 21;
 
+const BUILD_MILESTONES: &[(&str, f32, &str)] = &[
+    ("Generate local signing", 0.1, "Generating signing keys"),
+    // ("Building images for", 0.2, "Preparing build"),
+    ("Building package index", 0.2, "Building package index"),
+    ("Installing packages", 0.4, "Installing packages"),
+    ("Finalizing root filesystem", 0.7, "Finalizing filesystem"),
+    ("Building images...", 0.8, "Building images"),
+    ("Calculating checksums", 0.9, "Calculating checksums"),
+];
+
 #[derive(Clone, Copy)]
 enum Notification {
     Info,
@@ -42,7 +52,6 @@ enum Notification {
 
 #[derive(Default, Clone)]
 struct AppState {
-    build_output: Arc<RwLock<String>>,
     packages: Arc<RwLock<Vec<String>>>,
     profiles: Arc<RwLock<Vec<Profile>>>,
     selected_profile_id: Arc<RwLock<String>>,
@@ -53,9 +62,6 @@ struct AppState {
 
 impl AppState {
     fn reset(&self) {
-        if let Ok(mut build_output) = self.build_output.write() {
-            *build_output = String::new();
-        }
         if let Ok(mut packages) = self.packages.write() {
             *packages = Vec::new();
         }
@@ -245,19 +251,14 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
         return;
     }
     let ui_weak = ui_weak.clone();
-    let build_output = state.build_output.clone();
     tokio::spawn(async move {
-        let msg = "Initializing...\n".to_string();
-        println!("{}", msg.trim());
-        {
-            let build_output = build_output.clone();
-            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                sync_build_output(&ui, &build_output, msg);
-                ui.set_busy(true);
-                ui.set_progress_visible(true);
-                ui.set_progress_value(0.0);
-            });
-        }
+        println!("Initializing...");
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.set_busy(true);
+            ui.set_build_status(SharedString::from("Initializing"));
+            ui.set_progress_visible(true);
+            ui.set_progress_value(0.0);
+        });
 
         let temp_base = std::env::temp_dir().join("bouwer");
         let build_folder_path = temp_base.join("bin").join("targets").join(&target);
@@ -266,10 +267,8 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
         let filename = format!("build-{version}-{profile_id}-{now}.log");
         let log_file_path = build_folder_path.join(filename);
 
-        // Ensure the directory exists
         let _ = tokio::fs::create_dir_all(&build_folder_path).await;
 
-        // Open the log file for writing
         let mut log_file = tokio::fs::File::create(&log_file_path)
             .await
             .expect("Failed to create build.log");
@@ -314,12 +313,11 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
         let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
         let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
 
-        let mut cumulative_output = build_output.read().unwrap().clone();
-        let mut last_ui_update = Instant::now();
         let mut stdout_done = false;
         let mut stderr_done = false;
         let mut needs_update = false;
         let mut current_progress = 0.0f32;
+        let mut current_status = String::new();
 
         loop {
             let timeout = tokio::time::sleep(Duration::from_millis(50));
@@ -333,10 +331,12 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
                             AsyncWriteExt::write_all(&mut log_file, line.as_bytes()).await.unwrap();
                             AsyncWriteExt::write_all(&mut log_file, b"\n").await.unwrap();
 
-                            current_progress = current_progress.max(get_build_progress(&line));
+                            if let Some((new_progress, new_status)) = get_build_status(&line) {
+                                current_progress = current_progress.max(new_progress);
+                                current_status = new_status;
+                            }
+
                             current_progress += 0.0002;
-                            cumulative_output.push_str(&line);
-                            cumulative_output.push('\n');
                             needs_update = true;
                         }
                         Ok(None) => stdout_done = true,
@@ -350,9 +350,6 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
                             AsyncWriteExt::write_all(&mut log_file, line.as_bytes()).await.unwrap();
                             AsyncWriteExt::write_all(&mut log_file, b"\n").await.unwrap();
                             current_progress += 0.0002;
-                            cumulative_output.push_str(&line);
-                            cumulative_output.push('\n');
-                            needs_update = true;
                         }
                         Ok(None) => stderr_done = true,
                         Err(e) => { eprintln!("Stderr read error: {e}"); stderr_done = true; }
@@ -361,14 +358,14 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
                 () = &mut timeout, if needs_update => {}
             }
 
-            if needs_update && last_ui_update.elapsed() >= Duration::from_millis(50) {
-                let cumulative_output = cumulative_output.clone();
-                let store = build_output.clone();
+            if needs_update {
+                let current_status = current_status.clone();
                 let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                    sync_build_output(&ui, &store, cumulative_output);
+                    if !current_status.is_empty() {
+                        ui.set_build_status(SharedString::from(current_status));
+                    }
                     ui.set_progress_value(current_progress);
                 });
-                last_ui_update = Instant::now();
                 needs_update = false;
             }
 
@@ -378,18 +375,13 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
         }
 
         let _ = child.wait().await;
-        let final_msg = "Build completed.\n";
-        println!("{}", final_msg.trim());
-        cumulative_output.push_str(final_msg);
-        AsyncWriteExt::write_all(&mut log_file, final_msg.as_bytes())
+        println!("Build completed");
+        AsyncWriteExt::write_all(&mut log_file, current_status.as_bytes())
             .await
             .unwrap();
 
-        // Final UI sync to ensure the last batch of logs is visible
-        let cumulative_output = cumulative_output.clone();
-        let store = build_output.clone();
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            sync_build_output(&ui, &store, cumulative_output);
+            ui.set_build_status(SharedString::from("Build completed"));
             ui.set_progress_value(1.0);
             ui.set_progress_visible(false);
             ui.set_busy(false);
@@ -400,6 +392,7 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
 fn on_download(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
     let _ = ui_weak.upgrade_in_event_loop(|ui| {
         ui.set_busy(true);
+        ui.set_build_status(SharedString::from("Downloading image builder"));
         ui.set_image_exists(false);
         ui.set_progress_visible(true);
         ui.set_progress_value(0.0);
@@ -427,12 +420,14 @@ fn on_download(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
             fetch_and_update_packages(&ui_weak, state, true).await;
             ui_weak
                 .upgrade_in_event_loop(move |ui| {
+                    ui.set_build_status(SharedString::new());
                     ui.set_progress_visible(false);
                     ui.set_busy(false);
                 })
                 .unwrap();
         } else {
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.set_build_status(SharedString::new());
                 ui.set_progress_visible(false);
                 ui.set_busy(false);
 
@@ -466,6 +461,7 @@ fn on_load_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
         };
 
         let _ = ui_weak.upgrade_in_event_loop(|ui| {
+            ui.set_build_status(SharedString::from("Loading preset"));
             ui.set_progress_visible(true);
         });
 
@@ -657,7 +653,6 @@ fn on_profile_search(ui_weak: &slint::Weak<AppWindow>, state: &AppState, search:
     } else {
         vec![]
     };
-    sync_build_output(&ui, &state.build_output, String::new());
     ui.set_profiles(Rc::new(VecModel::from(filtered)).into());
 }
 
@@ -686,7 +681,6 @@ fn on_profile_selected(ui_weak: &slint::Weak<AppWindow>, state: &AppState, name:
     ui.set_selected_model(get_all_models_string(&profile).as_str().into());
     ui.set_selected_id(profile.id.as_str().into());
     ui.set_selected_target(profile.target.as_str().into());
-    sync_build_output(&ui, &state.build_output, String::new());
 
     let ui_weak = ui_weak.clone();
     tokio::spawn(async move {
@@ -759,7 +753,6 @@ fn on_version_changed(
                     *store = profiles;
                 }
                 let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                    sync_build_output(&ui, &state.build_output, String::new());
                     ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
                     ui.set_busy(false);
 
@@ -820,10 +813,8 @@ fn init(ui: &AppWindow, state: &AppState, client: OpenWrtClient) {
         }
 
         let filtered = filtered.clone();
-        let build_output = state.build_output.clone();
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             ui.set_versions(Rc::new(VecModel::from(filtered)).into());
-            sync_build_output(&ui, &build_output, String::new());
             ui.set_busy(true); // Still busy loading profiles
         });
 
@@ -968,23 +959,11 @@ fn filter_versions(versions: &[String], show_rcs: bool) -> Vec<SharedString> {
         .collect()
 }
 
-fn get_build_progress(line: &str) -> f32 {
-    // Update progress based on build milestones
-    if line.starts_with("Generate local signing keys") {
-        0.1
-    } else if line.starts_with("Building images for") {
-        0.2
-    } else if line.starts_with("Building package index") {
-        0.3
-    } else if line.starts_with("Installing packages") {
-        0.4
-    } else if line.starts_with("Finalizing root filesystem") {
-        0.7
-    } else if line.starts_with("Calculating checksums") {
-        0.9
-    } else {
-        0.0
-    }
+fn get_build_status(line: &str) -> Option<(f32, String)> {
+    BUILD_MILESTONES
+        .iter()
+        .find(|&&(prefix, _, _)| line.starts_with(prefix))
+        .map(|&(_, progress, status)| (progress, status.to_owned()))
 }
 
 fn get_build_volumes(overlay_path: &str) -> Vec<Volume> {
@@ -1115,6 +1094,7 @@ async fn load_preset_from_path(
     let state = state.clone();
 
     ui_weak.upgrade_in_event_loop(move |ui| {
+        ui.set_build_status(SharedString::new());
         ui.set_disabled_service_text(preset.disabled_services.into());
         ui.set_extra_image_name_text(preset.extra_image_name.into());
         ui.set_overlay_path_text(preset.overlay_path.into());
@@ -1193,10 +1173,11 @@ fn prepare_package_list(user_pkgs: &[String], original_pkgs: &[String]) -> Vec<S
 
 /// Resets the profile details section to empty/default values
 fn reset_profile_info(ui: &AppWindow, state: &AppState) {
+    ui.set_build_status(SharedString::new());
     ui.set_disabled_service_text(SharedString::new());
     ui.set_extra_image_name_text(SharedString::new());
-    ui.set_overlay_path_text(SharedString::new());
     ui.set_image_exists(false);
+    ui.set_overlay_path_text(SharedString::new());
     ui.set_packages_text(SharedString::new());
     ui.set_profiles_fetch_failed(false);
     ui.set_progress_visible(false);
@@ -1269,12 +1250,4 @@ fn show_error(
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         set_notification(Notification::Error, &ui, &msg);
     });
-}
-
-/// Synchronizes build logs between the background store and the UI property
-fn sync_build_output(ui: &AppWindow, store: &Arc<RwLock<String>>, text: String) {
-    if let Ok(mut output) = store.write() {
-        output.clone_from(&text);
-    }
-    ui.set_build_output(text.into());
 }

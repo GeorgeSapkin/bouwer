@@ -35,7 +35,7 @@ export component AppWindow inherits Window {
     in property <string> selected_target: "";
     in property <[string]> versions: [];
 
-    in-out property <string> build_output: "";
+    in-out property <string> build_status: "";
     in-out property <int> current_highlighted_profile_index: -1;
     in-out property <string> disabled_service_text: "";
     in-out property <string> extra_image_name_text: "";
@@ -121,7 +121,7 @@ export component AppWindow inherits Window {
 
         HorizontalBox {
             padding: 0px;
-            version_text :=Text {
+            version_text := Text {
                 text: "Version:";
                 font-size: 14px;
                 horizontal-alignment: right;
@@ -158,6 +158,7 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
                 width: version_text.width;
             }
+
             Rectangle {
                 horizontal-stretch: 1;
 
@@ -260,7 +261,6 @@ export component AppWindow inherits Window {
             }
         }
 
-
         HorizontalBox {
             padding: 0px;
             Rectangle {
@@ -270,7 +270,7 @@ export component AppWindow inherits Window {
             download_button := Button {
                 text: "Download image builder";
                 enabled: !busy && selected_id != "" && !image_exists;
-                primary: selected_id != "" &&!image_exists;
+                primary: selected_id != "" && !image_exists;
                 clicked => {
                     download_requested();
                 }
@@ -469,7 +469,6 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-
                 }
             }
         }
@@ -477,12 +476,6 @@ export component AppWindow inherits Window {
         HorizontalBox {
             padding: 0px;
             spacing: 10px;
-
-            build_output_switch := Switch {
-                checked: false;
-                enabled: !busy && !profiles_fetch_failed;
-                text: "Show build output";
-            }
 
             Rectangle {
                 horizontal-stretch: 1;
@@ -506,51 +499,6 @@ export component AppWindow inherits Window {
             }
         }
 
-        VerticalBox {
-            padding: 0;
-            vertical-stretch: 1;
-            height: 0px;
-            opacity: 0.0;
-            visible: false;
-
-            Rectangle {
-                background: Palette.background;
-                border-width: 1px;
-                border-color: Palette.border;
-                border-radius: 4px;
-                clip: true;
-                vertical-stretch: 1;
-                min-height: 150px;
-                Flickable {
-                    viewport-height: log-text.preferred-height + 10px;
-                    viewport-y: min(0px, self.height - self.viewport-height);
-                    log-text := Text {
-                        x: 5px;
-                        y: 5px;
-                        width: parent.width - 10px;
-                        text: build_output;
-                        font-family: "monospace";
-                        wrap: word-wrap;
-                        color: Palette.foreground;
-                    }
-                }
-            }
-
-            states [
-                visible_state when build_output_switch.checked: {
-                    opacity: 1.0;
-                    height: 150px;
-                    visible: true;
-                    in {
-                        animate opacity, height { duration: 250ms; }
-                    }
-                    out {
-                        animate opacity, height { duration: 250ms; }
-                    }
-                }
-            ]
-        }
-
         Rectangle {
             background: Palette.control-background;
             border-width: 1px;
@@ -566,29 +514,30 @@ export component AppWindow inherits Window {
                 status_text := Text {
                     text: "Ready";
                     font-size: 12px;
-                    horizontal-alignment: right;
+                    horizontal-alignment: left;
                     vertical-alignment: center;
 
                     states [
-                        fetch_failed when profiles_fetch_failed : {
+                        fetch_failed when profiles_fetch_failed: {
                             text: "Failed to fetch profiles";
                         }
-                        no_profile when selected_id == "" : {
+                        no_profile when selected_id == "": {
                             text: "Select profile";
                         }
-                        missing_builder when !image_exists : {
+                        missing_builder when !image_exists && build_status == "": {
                             text: "Missing image builder";
                         }
-                        building when busy && progress_visible && build_output != "" : {
-                            text: "Building";
-                        }
-                        loading_packages when busy : {
+                        loading_packages when busy && build_status == "": {
                             text: "Loading package list";
+                        }
+                        custom when build_status != "": {
+                            text: build_status;
                         }
                     ]
                 }
 
                 VerticalBox {
+                    width: 50%;
                     ProgressIndicator {
                         height: 10px;
                         progress: progress_value;
