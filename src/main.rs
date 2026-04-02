@@ -47,6 +47,7 @@ const BUILD_MILESTONES: &[(&str, f32, &str)] = &[
 #[derive(Clone, Copy)]
 enum Notification {
     Info,
+    Warning,
     Error,
 }
 
@@ -88,6 +89,7 @@ impl AppState {
 
 #[derive(Serialize, Deserialize, Default)]
 struct Preset {
+    release_series: String,
     target: String,
     profile_id: String,
     #[serde(skip_serializing_if = "String::is_empty", default)]
@@ -144,6 +146,7 @@ fn setup_callbacks(ui: &AppWindow, state: &AppState, client: OpenWrtClient) {
 
     ui.on_save_preset_requested({
         let ui_weak = ui_weak.clone();
+        let state = state.clone();
         move |target,
               profile_id,
               extra_image_name,
@@ -153,7 +156,9 @@ fn setup_callbacks(ui: &AppWindow, state: &AppState, client: OpenWrtClient) {
               overlay_path| {
             on_save_preset(
                 &ui_weak,
+                &state,
                 Preset {
+                    release_series: String::new(),
                     target: target.into(),
                     profile_id: profile_id.into(),
                     extra_image_name: extra_image_name.into(),
@@ -478,7 +483,10 @@ fn on_load_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
     });
 }
 
-fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, preset: Preset) {
+fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState, mut preset: Preset) {
+    let version = state.selected_version.read().unwrap().clone();
+    preset.release_series = get_release_series(&version);
+
     let filename = if preset.extra_image_name.is_empty() {
         format!("preset-{}.json", preset.profile_id)
     } else {
@@ -997,6 +1005,15 @@ fn get_image_tag(version: &str, target: &str) -> String {
     image_tag
 }
 
+fn get_release_series(version: &str) -> String {
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() >= 2 {
+        format!("{}.{}", parts[0], parts[1])
+    } else {
+        version.to_string()
+    }
+}
+
 async fn load_preset_from_path(
     ui_weak: &slint::Weak<AppWindow>,
     state: &AppState,
@@ -1048,6 +1065,9 @@ async fn load_preset_from_path(
         .read()
         .map_err(|_| "Version lock poisoned")?
         .clone();
+
+    let current_series = get_release_series(&version);
+    let preset_series = preset.release_series.clone();
 
     let exists = set_image_exists(ui_weak, &version, &target).await;
     if !exists {
@@ -1104,7 +1124,13 @@ async fn load_preset_from_path(
         ui.set_rootfs_size_value(preset.rootfs_size.into());
         ui.set_removed_packages_text(removed_str.into());
         ui.set_busy(false);
-        set_notification(Notification::Info, &ui, "");
+
+        let info_msg = if !preset_series.is_empty() && preset_series != current_series {
+            format!("Package list from preset series {preset_series} might be incompatible with {current_series}.")
+        } else {
+            String::new()
+        };
+        set_notification(Notification::Warning, &ui, &info_msg);
 
         state.update_with(target, profile_id, original_pkgs);
 
@@ -1215,22 +1241,18 @@ async fn set_image_exists(ui_weak: &slint::Weak<AppWindow>, version: &str, targe
 }
 
 fn set_notification(t: Notification, ui: &AppWindow, text: &str) {
-    let is_error = match t {
-        Notification::Error => {
-            if !text.is_empty() {
-                eprintln!("Error: {text}");
-            }
-            true
-        }
-        Notification::Info => {
-            if !text.is_empty() {
-                println!("{text}");
-            }
-            false
-        }
-    };
+    let is_empty = text.is_empty();
 
-    ui.set_notification_is_error(is_error);
+    if !is_empty {
+        match t {
+            Notification::Error => eprintln!("Error: {text}"),
+            Notification::Warning => eprintln!("Warning: {text}"),
+            Notification::Info => println!("{text}"),
+        }
+    }
+
+    ui.set_notification_is_error(!is_empty && matches!(t, Notification::Error));
+    ui.set_notification_is_warning(!is_empty && matches!(t, Notification::Warning));
     ui.set_notification(text.into());
 }
 

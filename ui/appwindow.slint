@@ -25,6 +25,7 @@ export component AppWindow inherits Window {
     in property <bool> busy: false;
     in property <bool> image_exists: false;
     in property <bool> notification_is_error: false;
+    in property <bool> notification_is_warning: false;
     in property <bool> profiles_fetch_failed: false;
     in property <[string]> profiles: [];
     in property <float> progress_value: 0.0;
@@ -72,8 +73,8 @@ export component AppWindow inherits Window {
         spacing: 10px;
 
         Rectangle {
-            background: notification_is_error ? #ffebee : #e1f5fe;
-            border-color: notification_is_error ? #f44336 : #03a9f4;
+            background: #e1f5fe;
+            border-color: #03a9f4;
             border-width: 1px;
             border-radius: 4px;
             height: 0px;
@@ -83,17 +84,17 @@ export component AppWindow inherits Window {
             HorizontalBox {
                 padding-left: 15px;
                 padding-right: 15px;
-                Text {
+                notification_text := Text {
                     text: notification;
-                    color: notification_is_error ? #b71c1c : #01579b;
+                    color: #01579b;
                     vertical-alignment: center;
                     font-size: 14px;
                     horizontal-stretch: 1;
                 }
 
-                Text {
+                close_icon := Text {
                     text: "🗙";
-                    color: notification_is_error ? #b71c1c : #01579b;
+                    color: #01579b;
                     vertical-alignment: center;
                     font-size: 18px;
                     TouchArea {
@@ -106,15 +107,31 @@ export component AppWindow inherits Window {
             }
 
             states [
-                visible_state when notification != "": {
+                error when notification != "" && notification_is_error: {
+                    background: #ffebee;
+                    border-color: #f44336;
+                    notification_text.color: #b71c1c;
+                    close_icon.color: #b71c1c;
                     opacity: 1.0;
                     height: 50px;
-                    in {
-                        animate opacity, height { duration: 250ms; }
-                    }
-                    out {
-                        animate opacity, height { duration: 250ms; }
-                    }
+                    in { animate opacity, height { duration: 250ms; } }
+                    out { animate opacity, height { duration: 250ms; } }
+                }
+                warning when notification != "" && notification_is_warning: {
+                    background: #fff9c4;
+                    border-color: #fbc02d;
+                    notification_text.color: #f57f17;
+                    close_icon.color: #f57f17;
+                    opacity: 1.0;
+                    height: 50px;
+                    in { animate opacity, height { duration: 250ms; } }
+                    out { animate opacity, height { duration: 250ms; } }
+                }
+                info when notification != "": {
+                    opacity: 1.0;
+                    height: 50px;
+                    in { animate opacity, height { duration: 250ms; } }
+                    out { animate opacity, height { duration: 250ms; } }
                 }
             ]
         }
