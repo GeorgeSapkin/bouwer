@@ -2,28 +2,31 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
+use bollard::container::LogOutput;
 use chrono::Local;
+use futures_util::StreamExt;
 use slint::platform::Key;
 use slint::{Model, SharedString, VecModel};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
+mod builder;
 mod cache;
 mod client;
 mod containers;
 mod data;
 mod profiles;
 
+use builder::ImageBuilder;
 use cache::MetadataCache;
 use client::OpenWrtClient;
-use containers::{Volume, image_exists, podman_available, pull_image, run_container};
+use containers::Containers;
 use data::{Preset, Profile};
 use profiles::{
     filter_profiles, find_profile_by_display_name, format_profile, get_all_models_string,
@@ -39,7 +42,7 @@ const MIN_SERIES: usize = 21;
 
 const BUILD_MILESTONES: &[(&str, f32, &str)] = &[
     ("Generate local signing", 0.1, "Generating signing keys"),
-    // ("Building images for", 0.2, "Preparing build"),
+    ("Building images for", 0.2, "Preparing build"),
     ("Building package index", 0.2, "Building package index"),
     ("Installing packages", 0.4, "Installing packages"),
     ("Finalizing root filesystem", 0.7, "Finalizing filesystem"),
@@ -97,41 +100,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui = AppWindow::new()?;
     let state = AppState::default();
+    let containers = Containers::new()?;
     ui.set_busy(true);
 
     let cache_path = std::env::temp_dir().join("bouwer").join("cache");
     let cache = MetadataCache::new(&cache_path);
     let client = OpenWrtClient::new(BASE_URL, cache.clone());
 
-    setup_callbacks(&ui, &state, client.clone(), &cache);
+    setup_callbacks(&ui, &state, &client, &cache, &containers);
 
-    init(&ui, &state, client.clone());
+    init(&ui, &state, client, &containers);
 
     ui.run()?;
     Ok(())
 }
 
-fn setup_callbacks(ui: &AppWindow, state: &AppState, client: OpenWrtClient, cache: &MetadataCache) {
+fn setup_callbacks(
+    ui: &AppWindow,
+    state: &AppState,
+    client: &OpenWrtClient,
+    cache: &MetadataCache,
+    containers: &Containers,
+) {
     let ui_weak = ui.as_weak();
 
     ui.on_build_requested({
         let ui_weak = ui_weak.clone();
         let state = state.clone();
-        move |packages| on_build(&ui_weak, &state, &packages)
+        let containers = containers.clone();
+        move |packages| on_build(&ui_weak, &state, &containers, &packages)
     });
 
     ui.on_download_requested({
         let ui_weak = ui_weak.clone();
         let state = state.clone();
         let cache = cache.clone();
-        move || on_download(&ui_weak, &state, &cache)
+        let containers = containers.clone();
+        move || on_download(&ui_weak, &state, &cache, &containers)
     });
 
     ui.on_load_preset_requested({
         let ui_weak = ui_weak.clone();
         let state = state.clone();
         let cache = cache.clone();
-        move || on_load_preset(&ui_weak, &state, &cache)
+        let containers = containers.clone();
+        move || on_load_preset(&ui_weak, &state, &cache, &containers)
     });
 
     ui.on_save_preset_requested({
@@ -174,7 +187,8 @@ fn setup_callbacks(ui: &AppWindow, state: &AppState, client: OpenWrtClient, cach
     ui.on_packages_edited({
         let ui_weak = ui_weak.clone();
         let state = state.clone();
-        // Store the handle to the pending debounce task so we can cancel it if the user types again
+        // Store the handle to the pending debounce task so we can cancel it if
+        // the user types again
         let debounce_task = Arc::new(RwLock::new(None::<JoinHandle<()>>));
         move |text| on_packages_edited(&ui_weak, &state, &debounce_task, &text)
     });
@@ -194,7 +208,8 @@ fn setup_callbacks(ui: &AppWindow, state: &AppState, client: OpenWrtClient, cach
         let ui_weak = ui_weak.clone();
         let state = state.clone();
         let cache = cache.clone();
-        move |name| on_profile_selected(&ui_weak, &state, &cache, &name)
+        let containers = containers.clone();
+        move |name| on_profile_selected(&ui_weak, &state, &cache, &containers, &name)
     });
 
     ui.on_show_rcs_toggled({
@@ -206,11 +221,17 @@ fn setup_callbacks(ui: &AppWindow, state: &AppState, client: OpenWrtClient, cach
     ui.on_version_changed({
         let ui_weak = ui_weak.clone();
         let state = state.clone();
+        let client = client.clone();
         move |version| on_version_changed(&ui_weak, &state, &client, &version)
     });
 }
 
-fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &SharedString) {
+fn on_build(
+    ui_weak: &slint::Weak<AppWindow>,
+    state: &AppState,
+    containers: &Containers,
+    packages: &SharedString,
+) {
     let version = state.selected_version.read().unwrap().clone();
     let target = state.selected_target.read().unwrap().clone();
     let profile_id = state.selected_profile_id.read().unwrap().clone();
@@ -247,6 +268,7 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
         return;
     }
     let ui_weak = ui_weak.clone();
+    let containers = containers.clone();
     tokio::spawn(async move {
         println!("Initializing...");
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
@@ -269,89 +291,56 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
             .await
             .expect("Failed to create build.log");
 
-        let image_tag = get_image_tag(&version, &target);
-        let profile_arg = format!("PROFILE={profile_id}");
-        let extra_image_name_arg = format!("EXTRA_IMAGE_NAME={extra_image_name}");
-        let rootfs_size_arg = format!("ROOTFS_SIZE={rootfs_size}");
-        let packages_arg = format!("PACKAGES={packages}");
-        let disabled_services_arg = format!("DISABLED_SERVICES={disabled_services}");
-
-        let mut container_args = vec!["make", "image", &profile_arg, &packages_arg];
-
-        if !extra_image_name.is_empty() {
-            container_args.push(&extra_image_name_arg);
-        }
-
-        if !rootfs_size.is_empty() {
-            container_args.push(&rootfs_size_arg);
-        }
-
-        if !disabled_services.is_empty() {
-            container_args.push(&disabled_services_arg);
-        }
-
-        if !overlay_path.is_empty() {
-            container_args.push("FILES=/overlay");
-        }
-
         println!("Version: {version}\nTarget: {target}\nProfile: {profile_id}");
         println!("Extra image name: {extra_image_name}\nRootFS size: {rootfs_size}");
         println!("Disabled services: {disabled_services}\nRequested packages: {packages}");
         println!("Overlay path: {overlay_path}\n");
 
-        let volumes = get_build_volumes(&overlay_path);
-        let mut child = run_container(&image_tag, &container_args, &volumes)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("Failed to start build command");
+        let image_builder = ImageBuilder::new(containers.clone(), IMAGE_NAME, &version, &target);
+        let mut stream = image_builder
+            .build_firmware(
+                &profile_id,
+                &packages,
+                &extra_image_name,
+                &rootfs_size,
+                &disabled_services,
+                &overlay_path,
+            )
+            .await
+            .expect("Failed to start build container");
 
-        let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
-        let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
-
-        let mut stdout_done = false;
-        let mut stderr_done = false;
         let mut needs_update = false;
         let mut current_progress = 0.0f32;
         let mut current_status = String::new();
 
-        loop {
-            let timeout = tokio::time::sleep(Duration::from_millis(50));
-            tokio::pin!(timeout);
-
-            tokio::select! {
-                res = stdout.next_line(), if !stdout_done => {
-                    match res {
-                        Ok(Some(line)) => {
-                            println!("{line}");
-                            AsyncWriteExt::write_all(&mut log_file, line.as_bytes()).await.unwrap();
-                            AsyncWriteExt::write_all(&mut log_file, b"\n").await.unwrap();
-
-                            if let Some((new_progress, new_status)) = get_build_status(&line) {
-                                current_progress = current_progress.max(new_progress);
-                                current_status = new_status;
-                            }
-
-                            current_progress += 0.0002;
-                            needs_update = true;
-                        }
-                        Ok(None) => stdout_done = true,
-                        Err(e) => { eprintln!("Stdout read error: {e}"); stdout_done = true; }
-                    }
+        while let Some(log_result) = stream.next().await {
+            let line = match log_result {
+                Ok(LogOutput::StdOut { message } | LogOutput::StdErr { message }) => {
+                    String::from_utf8_lossy(&message).to_string()
                 }
-                res = stderr.next_line(), if !stderr_done => {
-                    match res {
-                        Ok(Some(line)) => {
-                            eprintln!("{line}");
-                            AsyncWriteExt::write_all(&mut log_file, line.as_bytes()).await.unwrap();
-                            AsyncWriteExt::write_all(&mut log_file, b"\n").await.unwrap();
-                            current_progress += 0.0002;
-                        }
-                        Ok(None) => stderr_done = true,
-                        Err(e) => { eprintln!("Stderr read error: {e}"); stderr_done = true; }
-                    }
+                Err(e) => {
+                    eprintln!("Log stream error: {e}");
+                    break;
                 }
-                () = &mut timeout, if needs_update => {}
+                _ => continue,
+            };
+
+            for l in line.lines() {
+                println!("{l}");
+                AsyncWriteExt::write_all(&mut log_file, l.as_bytes())
+                    .await
+                    .unwrap();
+                AsyncWriteExt::write_all(&mut log_file, b"\n")
+                    .await
+                    .unwrap();
+
+                if let Some((new_progress, new_status)) = get_build_status(l) {
+                    current_progress = current_progress.max(new_progress);
+                    current_status = new_status;
+                }
+
+                current_progress += 0.0002;
+                needs_update = true;
             }
 
             if needs_update {
@@ -364,13 +353,8 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
                 });
                 needs_update = false;
             }
-
-            if stdout_done && stderr_done {
-                break;
-            }
         }
 
-        let _ = child.wait().await;
         println!("Build completed");
         AsyncWriteExt::write_all(&mut log_file, current_status.as_bytes())
             .await
@@ -385,7 +369,13 @@ fn on_build(ui_weak: &slint::Weak<AppWindow>, state: &AppState, packages: &Share
     });
 }
 
-fn on_download(ui_weak: &slint::Weak<AppWindow>, state: &AppState, cache: &MetadataCache) {
+#[allow(clippy::cast_precision_loss)]
+fn on_download(
+    ui_weak: &slint::Weak<AppWindow>,
+    state: &AppState,
+    cache: &MetadataCache,
+    containers: &Containers,
+) {
     let _ = ui_weak.upgrade_in_event_loop(|ui| {
         ui.set_busy(true);
         ui.set_build_status(SharedString::from("Downloading image builder"));
@@ -399,22 +389,49 @@ fn on_download(ui_weak: &slint::Weak<AppWindow>, state: &AppState, cache: &Metad
     let ui_weak = ui_weak.clone();
     let state = state.clone();
     let cache = cache.clone();
+    let containers = containers.clone();
     let version = state.selected_version.read().unwrap().clone();
     let target = state.selected_target.read().unwrap().clone();
     tokio::spawn(async move {
-        let image_tag = get_image_tag(&version, &target);
+        {
+            let image_builder =
+                ImageBuilder::new(containers.clone(), IMAGE_NAME, &version, &target);
+            let mut stream = image_builder.download();
+            let mut current_progress = 0.0f32;
 
-        let mut child = pull_image(&image_tag)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("Failed to pull image");
+            while let Some(pull_result) = stream.next().await {
+                match pull_result {
+                    Ok(info) => {
+                        if let Some(status) = info.status {
+                            if let Some(pd) = info.progress_detail {
+                                if let (Some(current), Some(total)) = (pd.current, pd.total)
+                                    && total > 0
+                                {
+                                    current_progress = current as f32 / total as f32;
+                                }
+                            } else {
+                                current_progress = (current_progress + 0.001).min(0.99);
+                            }
+                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                                ui.set_build_status(status.into());
+                                ui.set_progress_value(current_progress);
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        let msg = format!("Pull error: {e}");
+                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                            set_notification(Notification::Error, &ui, &msg);
+                        });
+                        break;
+                    }
+                }
+            }
+        }
 
-        let _ = child.wait().await;
-
-        let exists = set_image_exists(&ui_weak, &version, &target).await;
+        let exists = set_image_exists(&ui_weak, &containers, &version, &target).await;
         if exists {
-            fetch_and_update_packages(&ui_weak, state, cache, true).await;
+            fetch_and_update_packages(&ui_weak, state, cache, containers, true).await;
             ui_weak
                 .upgrade_in_event_loop(move |ui| {
                     ui.set_build_status(SharedString::new());
@@ -437,13 +454,19 @@ fn on_download(ui_weak: &slint::Weak<AppWindow>, state: &AppState, cache: &Metad
     });
 }
 
-fn on_load_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState, cache: &MetadataCache) {
+fn on_load_preset(
+    ui_weak: &slint::Weak<AppWindow>,
+    state: &AppState,
+    cache: &MetadataCache,
+    containers: &Containers,
+) {
     let _ = ui_weak.upgrade_in_event_loop(|ui| {
         ui.set_busy(true);
     });
 
     let ui_weak = ui_weak.clone();
     let state = state.clone();
+    let containers = containers.clone();
     let cache = cache.clone();
     tokio::spawn(async move {
         let picker = rfd::AsyncFileDialog::new()
@@ -464,7 +487,7 @@ fn on_load_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState, cache: &Me
         });
 
         let path = PathBuf::from(path);
-        if let Err(e) = load_preset_from_path(&ui_weak, &state, &path, cache).await {
+        if let Err(e) = load_preset_from_path(&ui_weak, &state, &path, cache, containers).await {
             eprintln!("Error loading preset: {e}");
             let msg = format!("{e}");
             show_error(&ui_weak, &msg, None);
@@ -661,6 +684,7 @@ fn on_profile_selected(
     ui_weak: &slint::Weak<AppWindow>,
     state: &AppState,
     cache: &MetadataCache,
+    containers: &Containers,
     name: &SharedString,
 ) {
     let Some(ui) = ui_weak.upgrade() else {
@@ -689,11 +713,12 @@ fn on_profile_selected(
 
     let ui_weak = ui_weak.clone();
     let state = state.clone();
+    let containers = containers.clone();
     let cache = cache.clone();
     tokio::spawn(async move {
-        let exists = set_image_exists(&ui_weak, &version, &profile.target).await;
+        let exists = set_image_exists(&ui_weak, &containers, &version, &profile.target).await;
         if exists {
-            fetch_and_update_packages(&ui_weak, state, cache, false).await;
+            fetch_and_update_packages(&ui_weak, state, cache, containers, false).await;
         } else {
             let _ = ui_weak.upgrade_in_event_loop(|ui| {
                 ui.set_busy(false);
@@ -782,15 +807,16 @@ fn on_version_changed(
     });
 }
 
-fn init(ui: &AppWindow, state: &AppState, client: OpenWrtClient) {
+fn init(ui: &AppWindow, state: &AppState, client: OpenWrtClient, containers: &Containers) {
     let ui_weak = ui.as_weak();
     let state = state.clone();
     let show_rcs = ui.get_show_rcs();
+    let containers = containers.clone();
     tokio::spawn(async move {
-        if !podman_available().await {
+        if !containers.is_available().await {
             show_error(
                 &ui_weak,
-                "Podman not found. Please install Podman and ensure it is in your PATH to use Bouwer.",
+                "Podman or Docker not found. Please ensure either of them is running.",
                 None,
             );
             return;
@@ -860,6 +886,7 @@ async fn fetch_and_update_packages(
     ui_weak: &slint::Weak<AppWindow>,
     state: AppState,
     cache: MetadataCache,
+    containers: Containers,
     already_busy: bool,
 ) {
     if !already_busy {
@@ -873,12 +900,13 @@ async fn fetch_and_update_packages(
     let target = state.selected_target.read().unwrap().clone();
     let profile_id = state.selected_profile_id.read().unwrap().clone();
 
-    let mut packages = fetch_packages_for_profile(&cache, &version, &target, &profile_id)
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("Error fetching packages: {e}");
-            EXTRA_PACKAGES.to_string()
-        });
+    let mut packages =
+        fetch_packages_for_profile(&cache, &containers, &version, &target, &profile_id)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("Error fetching packages: {e}");
+                EXTRA_PACKAGES.to_string()
+            });
 
     if !packages.is_empty() {
         packages = packages + " " + EXTRA_PACKAGES;
@@ -917,6 +945,7 @@ async fn fetch_and_update_packages(
 /// Get default and device-specific packages from the image builder
 async fn fetch_packages_for_profile(
     cache: &MetadataCache,
+    containers: &Containers,
     version: &str,
     target: &str,
     profile_id: &str,
@@ -925,35 +954,11 @@ async fn fetch_packages_for_profile(
         return Ok(packages);
     }
 
-    let image_tag = get_image_tag(version, target);
-    println!("Fetching package info for {profile_id} from {image_tag}");
-    let volumes = vec![];
-    let output = run_container(&image_tag, &["make", "info"], &volumes)
-        .output()
-        .await?;
+    println!("Fetching package info for {profile_id} from {version} and {target}");
 
-    if !output.status.success() {
-        return Err(format!("Podman exited with status {}", output.status).into());
-    }
+    let image_builder = ImageBuilder::new(containers.clone(), IMAGE_NAME, version, target);
+    let result = image_builder.fetch_package_list(profile_id).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut default_pkgs = String::new();
-    let mut device_pkgs = String::new();
-    let mut in_profile_block = false;
-
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if let Some(pkgs) = trimmed.strip_prefix("Default Packages:") {
-            default_pkgs = pkgs.trim().to_string();
-        } else if trimmed.starts_with(&format!("{profile_id}:")) {
-            in_profile_block = true;
-        } else if in_profile_block && let Some(pkgs) = trimmed.strip_prefix("Packages:") {
-            device_pkgs = pkgs.trim().to_string();
-            break; // Found both, exit
-        }
-    }
-
-    let result = format!("{default_pkgs} {device_pkgs}").trim().to_string();
     cache
         .store_packages(version, target, profile_id, &result)
         .await;
@@ -982,37 +987,6 @@ fn get_build_status(line: &str) -> Option<(f32, String)> {
         .map(|&(_, progress, status)| (progress, status.to_owned()))
 }
 
-fn get_build_volumes(overlay_path: &str) -> Vec<Volume> {
-    let temp_base = std::env::temp_dir().join("bouwer");
-    let bin_path = temp_base.join("bin");
-    let dl_path = temp_base.join("dl");
-    let mut volumes = vec![
-        Volume {
-            src: bin_path.display().to_string(),
-            dest: "/builder/bin".to_string(),
-        },
-        Volume {
-            src: dl_path.display().to_string(),
-            dest: "/builder/dl".to_string(),
-        },
-    ];
-
-    if !overlay_path.is_empty() {
-        volumes.push(Volume {
-            src: overlay_path.to_string(),
-            dest: "/overlay".to_string(),
-        });
-    }
-
-    volumes
-}
-
-fn get_image_tag(version: &str, target: &str) -> String {
-    let target_slug = target.replace('/', "-");
-    let image_tag = format!("{IMAGE_NAME}:{target_slug}-{version}");
-    image_tag
-}
-
 fn get_release_series(version: &str) -> String {
     let parts: Vec<&str> = version.split('.').collect();
     if parts.len() >= 2 {
@@ -1027,6 +1001,7 @@ async fn load_preset_from_path(
     state: &AppState,
     path: &Path,
     cache: MetadataCache,
+    containers: Containers,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let content = tokio::fs::read_to_string(&path).await?;
     let preset: Preset = serde_json::from_str(&content)?;
@@ -1078,7 +1053,7 @@ async fn load_preset_from_path(
     let current_series = get_release_series(&version);
     let preset_series = preset.release_series.clone();
 
-    let exists = set_image_exists(ui_weak, &version, &target).await;
+    let exists = set_image_exists(ui_weak, &containers, &version, &target).await;
     if !exists {
         let _ = ui_weak.upgrade_in_event_loop(|ui| {
             ui.set_progress_visible(false);
@@ -1088,12 +1063,13 @@ async fn load_preset_from_path(
     }
 
     // Load original packages for comparison
-    let fetched_pkgs = fetch_packages_for_profile(&cache, &version, &target, profile_id)
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("Error fetching packages for preset: {e}");
-            EXTRA_PACKAGES.to_string()
-        });
+    let fetched_pkgs =
+        fetch_packages_for_profile(&cache, &containers, &version, &target, profile_id)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("Error fetching packages for preset: {e}");
+                EXTRA_PACKAGES.to_string()
+            });
 
     // TODO: Disable build when there are no packages
     let packages_source = if fetched_pkgs.is_empty() {
@@ -1227,11 +1203,16 @@ fn reset_profile_info(ui: &AppWindow, state: &AppState) {
     set_notification(Notification::Info, ui, "");
 }
 
-async fn set_image_exists(ui_weak: &slint::Weak<AppWindow>, version: &str, target: &str) -> bool {
+async fn set_image_exists(
+    ui_weak: &slint::Weak<AppWindow>,
+    containers: &Containers,
+    version: &str,
+    target: &str,
+) -> bool {
     println!("Checking if image exists: {version} {target}");
 
-    let image_tag = get_image_tag(version, target);
-    let exists = image_exists(&image_tag).await;
+    let image_builder = ImageBuilder::new(containers.clone(), IMAGE_NAME, version, target);
+    let exists = image_builder.exists().await;
 
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         ui.set_image_exists(exists);
