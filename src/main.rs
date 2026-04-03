@@ -68,38 +68,28 @@ impl Notification {
     }
 }
 
-#[derive(Default, Clone)]
-struct AppState {
-    packages: Arc<RwLock<Vec<String>>>,
-    profiles: Arc<RwLock<Vec<Profile>>>,
-    selected_profile_id: Arc<RwLock<String>>,
-    selected_target: Arc<RwLock<String>>,
-    selected_version: Arc<RwLock<String>>,
-    versions: Arc<RwLock<Vec<String>>>,
+#[derive(Default)]
+struct AppInternalState {
+    packages: Vec<String>,
+    profiles: Vec<Profile>,
+    selected_profile_id: String,
+    selected_target: String,
+    selected_version: String,
+    versions: Vec<String>,
 }
 
-impl AppState {
-    fn reset(&self) {
-        if let Ok(mut packages) = self.packages.write() {
-            *packages = Vec::new();
-        }
-        if let Ok(mut selected_profile_id) = self.selected_profile_id.write() {
-            *selected_profile_id = String::new();
-        }
-        if let Ok(mut selected_target) = self.selected_target.write() {
-            *selected_target = String::new();
-        }
-    }
+type AppState = Arc<RwLock<AppInternalState>>;
 
-    fn update_with(&self, target: String, profile_id: String, original_pkgs: Vec<String>) {
-        if let Ok(mut packages) = self.packages.write() {
-            *packages = original_pkgs;
-        }
-        if let Ok(mut selected_profile_id) = self.selected_profile_id.write() {
-            *selected_profile_id = profile_id;
-        }
-        if let Ok(mut selected_target) = self.selected_target.write() {
-            *selected_target = target;
+trait AppStateExt {
+    fn reset(&self);
+}
+
+impl AppStateExt for AppState {
+    fn reset(&self) {
+        if let Ok(mut s) = self.write() {
+            s.packages.clear();
+            s.selected_profile_id.clear();
+            s.selected_target.clear();
         }
     }
 }
@@ -110,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
     slint::platform::set_platform(Box::new(backend)).context("Failed to set Slint platform")?;
 
     let ui = AppWindow::new()?;
-    let state = AppState::default();
+    let state = Arc::new(RwLock::new(AppInternalState::default()));
     let containers = Containers::new()?;
     ui.set_busy(true);
 
@@ -243,18 +233,17 @@ fn on_build(
     containers: &Containers,
     packages: &SharedString,
 ) {
-    let version = state.selected_version.read().unwrap().clone();
-    let target = state.selected_target.read().unwrap().clone();
-    let profile_id = state.selected_profile_id.read().unwrap().clone();
+    let s = state.read().unwrap();
+    let version = s.selected_version.clone();
+    let target = s.selected_target.clone();
+    let profile_id = s.selected_profile_id.clone();
     let user_pkgs: Vec<String> = packages
         .split_whitespace()
         .map(ToString::to_string)
         .collect();
-    let packages = {
-        let original_pkgs = state.packages.read().unwrap();
-        prepare_package_list(&user_pkgs, &original_pkgs)
-    };
+    let packages = prepare_package_list(&user_pkgs, &s.packages);
     let packages = packages.join(" ");
+    drop(s); // release lock early
 
     let (extra_image_name, rootfs_size, disabled_services, overlay_path) = {
         let ui = ui_weak.upgrade().unwrap();
@@ -401,8 +390,10 @@ fn on_download(
     let state = state.clone();
     let cache = cache.clone();
     let containers = containers.clone();
-    let version = state.selected_version.read().unwrap().clone();
-    let target = state.selected_target.read().unwrap().clone();
+    let (version, target) = {
+        let s = state.read().unwrap();
+        (s.selected_version.clone(), s.selected_target.clone())
+    };
     tokio::spawn(async move {
         {
             let image_builder =
@@ -511,7 +502,7 @@ fn on_load_preset(
 }
 
 fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState, mut preset: Preset) {
-    let version = state.selected_version.read().unwrap().clone();
+    let version = state.read().unwrap().selected_version.clone();
     preset.release_series = get_release_series(&version);
 
     let filename = if preset.extra_image_name.is_empty() {
@@ -555,14 +546,15 @@ fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState, mut preset
 }
 
 fn on_open_build_folder(state: &AppState) {
-    let version = state.selected_version.read().unwrap().clone();
-    let target = state.selected_target.read().unwrap().clone();
+    let s = state.read().unwrap();
+    let version = &s.selected_version;
+    let target = &s.selected_target;
     if version.is_empty() || target.is_empty() {
         eprintln!("Cannot open folder: Version or Target is missing.");
         return;
     }
     let temp_base = std::env::temp_dir().join("bouwer");
-    let build_folder_path = temp_base.join("bin").join("targets").join(&target);
+    let build_folder_path = temp_base.join("bin").join("targets").join(target);
     open_dir(&build_folder_path);
 }
 
@@ -618,7 +610,7 @@ fn on_packages_edited(
         // Wait for 500ms of inactivity
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let original = state.packages.read().unwrap().clone();
+        let original = state.read().unwrap().packages.clone();
         let current_set: HashSet<_> = text.split_whitespace().collect();
 
         // Identify which original packages are no longer in the user's list
@@ -676,12 +668,9 @@ fn on_profile_search(ui_weak: &slint::Weak<AppWindow>, state: &AppState, search:
     let Some(ui) = ui_weak.upgrade() else { return };
     reset_profile_info(&ui, state);
     ui.set_current_highlighted_profile_index(-1);
+    let s = state.read().unwrap();
     let filtered = if search.chars().count() >= MIN_SEARCH_CHARS {
-        state
-            .profiles
-            .read()
-            .map(|p| filter_profiles(&p, search))
-            .unwrap_or_default()
+        filter_profiles(&s.profiles, search)
             .iter()
             .map(SharedString::from)
             .collect::<Vec<_>>()
@@ -701,23 +690,24 @@ fn on_profile_selected(
     let Some(ui) = ui_weak.upgrade() else {
         return;
     };
-    let profile = state
-        .profiles
-        .read()
-        .ok()
-        .and_then(|p| find_profile_by_display_name(&p, name));
+
+    let (profile, version) = {
+        let s = state.read().unwrap();
+        let p = find_profile_by_display_name(&s.profiles, name);
+        (p, s.selected_version.clone())
+    };
+
     let Some(profile) = profile else {
         return;
     };
+
     ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
     ui.set_search_text(name.clone());
-    if let Ok(mut p_id) = state.selected_profile_id.write() {
-        p_id.clone_from(&profile.id);
+    if let Ok(mut s) = state.write() {
+        s.selected_profile_id.clone_from(&profile.id);
+        s.selected_target.clone_from(&profile.target);
     }
-    if let Ok(mut t) = state.selected_target.write() {
-        t.clone_from(&profile.target);
-    }
-    let version = state.selected_version.read().unwrap().clone();
+
     ui.set_selected_model(get_all_models_string(&profile).as_str().into());
     ui.set_selected_id(profile.id.as_str().into());
     ui.set_selected_target(profile.target.as_str().into());
@@ -744,22 +734,18 @@ fn on_profile_selected(
 }
 
 fn on_show_rcs_toggled(ui_weak: &slint::Weak<AppWindow>, state: &AppState, show_rcs: bool) {
-    let Ok(versions) = state.versions.read() else {
+    let Ok(s) = state.read() else {
         return;
     };
-    let Some(ui) = ui_weak.upgrade() else {
-        return;
-    };
-    let filtered = filter_versions(&versions, show_rcs);
+    let Some(ui) = ui_weak.upgrade() else { return };
+    let filtered = filter_versions(&s.versions, show_rcs);
     ui.set_versions(Rc::new(VecModel::from(filtered)).into());
 
-    if !show_rcs && state.selected_version.read().unwrap().contains("-rc") {
+    if !show_rcs && s.selected_version.contains("-rc") {
+        drop(s);
         ui.set_search_text("".into());
         ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
         reset_profile_info(&ui, state);
-        if let Ok(mut v) = state.selected_version.write() {
-            v.clone_from(versions.first().unwrap_or(&String::new()));
-        }
     }
 }
 
@@ -770,11 +756,9 @@ fn on_version_changed(
     version: &SharedString,
 ) {
     let version = version.to_string();
-    if let Ok(mut v) = state.selected_version.write() {
-        v.clone_from(&version);
-    }
-    if let Ok(mut p_id) = state.selected_profile_id.write() {
-        *p_id = String::new();
+    if let Ok(mut s) = state.write() {
+        s.selected_version.clone_from(&version);
+        s.selected_profile_id = String::new();
     }
 
     let _ = ui_weak.upgrade_in_event_loop({
@@ -792,8 +776,8 @@ fn on_version_changed(
     tokio::spawn(async move {
         match client.fetch_profiles(&version).await {
             Ok(profiles) => {
-                if let Ok(mut store) = state.profiles.write() {
-                    *store = profiles;
+                if let Ok(mut s) = state.write() {
+                    s.profiles = profiles;
                 }
                 let _ = ui_weak.upgrade_in_event_loop(move |ui| {
                     ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
@@ -840,8 +824,8 @@ fn init(ui: &AppWindow, state: &AppState, client: OpenWrtClient, containers: &Co
         }
 
         let versions = versions_res.unwrap();
-        if let Ok(mut raw) = state.versions.write() {
-            raw.clone_from(&versions);
+        if let Ok(mut s) = state.write() {
+            s.versions.clone_from(&versions);
         }
 
         let filtered = filter_versions(&versions, show_rcs);
@@ -850,8 +834,8 @@ fn init(ui: &AppWindow, state: &AppState, client: OpenWrtClient, containers: &Co
             return; // No versions, nothing to load
         };
 
-        if let Ok(mut v) = state.selected_version.write() {
-            v.clone_from(&first_version);
+        if let Ok(mut s) = state.write() {
+            s.selected_version.clone_from(&first_version);
         }
 
         let filtered = filtered.clone();
@@ -863,8 +847,8 @@ fn init(ui: &AppWindow, state: &AppState, client: OpenWrtClient, containers: &Co
         let profiles_res = client.fetch_profiles(&first_version).await;
         match profiles_res {
             Ok(profiles) => {
-                if let Ok(mut store) = state.profiles.write() {
-                    *store = profiles;
+                if let Ok(mut s) = state.write() {
+                    s.profiles = profiles;
                 }
             }
             Err(e) => {
@@ -905,9 +889,14 @@ async fn fetch_and_update_packages(
         });
     }
 
-    let version = state.selected_version.read().unwrap().clone();
-    let target = state.selected_target.read().unwrap().clone();
-    let profile_id = state.selected_profile_id.read().unwrap().clone();
+    let (version, target, profile_id) = {
+        let s = state.read().unwrap();
+        (
+            s.selected_version.clone(),
+            s.selected_target.clone(),
+            s.selected_profile_id.clone(),
+        )
+    };
 
     let mut packages =
         fetch_packages_for_profile(&cache, &containers, &version, &target, &profile_id)
@@ -928,8 +917,8 @@ async fn fetch_and_update_packages(
     pkgs_vec.sort_unstable();
     pkgs_vec.dedup();
 
-    if let Ok(mut store) = state.packages.write() {
-        store.clone_from(&pkgs_vec);
+    if let Ok(mut s) = state.write() {
+        s.packages.clone_from(&pkgs_vec);
     }
 
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
@@ -1018,11 +1007,10 @@ async fn load_preset_from_path(
     let profile_id = &preset.profile_id;
 
     let found = {
-        let profiles = state
-            .profiles
+        let s = state
             .read()
             .map_err(|_| anyhow::anyhow!("Profiles lock poisoned"))?;
-        profiles
+        s.profiles
             .iter()
             .find(|p| &p.id == profile_id && &p.target == target_id)
             .map(|p| {
@@ -1055,12 +1043,7 @@ async fn load_preset_from_path(
         }
     })?;
 
-    let version = state
-        .selected_version
-        .read()
-        .map_err(|_| anyhow::anyhow!("Version lock poisoned"))?
-        .clone();
-
+    let version = state.read().unwrap().selected_version.clone();
     let current_series = get_release_series(&version);
     let preset_series = preset.release_series.clone();
 
@@ -1126,7 +1109,11 @@ async fn load_preset_from_path(
             set_notification(Notification::Warning, &ui, Some(&info_msg));
         }
 
-        state.update_with(target, profile_id, original_pkgs);
+        if let Ok(mut s) = state.write() {
+            s.selected_target = target;
+            s.selected_profile_id = profile_id;
+            s.packages = original_pkgs;
+        }
 
         let ui_weak = ui.as_weak();
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
