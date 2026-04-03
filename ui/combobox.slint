@@ -1,0 +1,119 @@
+// Copyright (C) 2026 George Sapkin
+//
+// SPDX-License-Identifier: GPL-3.0-only
+
+import { LineEdit, ListView, Palette, VerticalBox } from "std-widgets.slint";
+
+export component EditableComboBox inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder-text;
+    in property <bool> enabled: true;
+    in property <[string]> model;
+    in-out property <int> current-index: -1;
+    in property <bool> is-open;
+    in property <length> item-height: 40px;
+
+    callback edited(string);
+    callback key_pressed(KeyEvent) -> bool;
+    callback selected(string);
+
+    forward-focus: input;
+
+    input := LineEdit {
+        text <=> root.text;
+        placeholder-text: root.placeholder-text;
+        enabled: root.enabled;
+        width: 100%;
+        edited(t) => {
+            root.edited(t);
+        }
+        key-pressed(event) => {
+            if (root.key_pressed(event)) {
+                return accept;
+            }
+            reject
+        }
+    }
+
+    if (root.is-open && root.model.length > 0): Rectangle {
+        background: Palette.background;
+        border-width: 1px;
+        border-color: Palette.border;
+        border-radius: 4px;
+        clip: false;
+        height: min(root.item-height * 6 + 4px, root.model.length * root.item-height + 4px);
+        y: input.height + 6px;
+
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: Palette.color-scheme == ColorScheme.dark ? rgba(0, 0, 0, 0.26) : rgba(0, 0, 0, 0.14);
+
+        TouchArea {
+            width: 100%;
+            height: 100%;
+        }
+
+        VerticalBox {
+            padding-top: 2px;
+            padding-bottom: 2px;
+            padding-left: 0;
+            padding-right: 0;
+            ListView {
+                property <int> active_index: root.current-index;
+
+                changed active_index => {
+                    if (self.active_index < 0) {
+                        return;
+                    }
+                    if (self.active_index * root.item-height < -self.viewport-y) {
+                        self.viewport-y = -self.active_index * root.item-height;
+                    } else if ((self.active_index + 1) * root.item-height > -self.viewport-y + self.height) {
+                        self.viewport-y = -((self.active_index + 1) * root.item-height - self.height);
+                    }
+                }
+
+                for item[index] in root.model: Rectangle {
+                    height: root.item-height;
+
+                    item_bg := Rectangle {
+                        x: 4px;
+                        y: 2px;
+                        height: parent.height - 4px;
+                        width: parent.width - 8px;
+                        border-radius: 4px;
+                        background: index == root.current-index ? Palette.control-background : item_touch.has-hover ? Palette.alternate-background : transparent;
+                        animate background { duration: 125ms; }
+                    }
+
+                    Rectangle {
+                        x: 8px;
+                        y: (parent.height - self.height) / 2;
+                        width: 3px;
+                        height: index == root.current-index ? 16px : 0px;
+                        background: Palette.accent-background;
+                        border-radius: 2px;
+                        opacity: index == root.current-index ? 1.0 : 0.0;
+                        animate height, opacity {
+                            duration: 150ms;
+                            easing: ease-out;
+                        }
+                    }
+
+                    Text {
+                        x: 20px;
+                        text: item;
+                        vertical-alignment: center;
+                        color: Palette.foreground;
+                        animate color { duration: 125ms; }
+                    }
+
+                    item_touch := TouchArea {
+                        clicked => {
+                            root.selected(item);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

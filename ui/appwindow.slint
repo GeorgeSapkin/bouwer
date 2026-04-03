@@ -18,6 +18,7 @@ import {
     VerticalBox,
 } from "std-widgets.slint";
 
+import { EditableComboBox } from "combobox.slint";
 import { Notification } from "notification.slint";
 import { Tooltip } from "tooltip.slint";
 
@@ -69,7 +70,7 @@ export component AppWindow inherits Window {
     callback version_changed(string);
 
     request_profile_search_focus => {
-        profile_search.focus();
+        profile_combo.focus();
     }
 
     title: "Bouwer - OpenWrt Firmware Builder";
@@ -125,104 +126,24 @@ export component AppWindow inherits Window {
                 width: version_text.width;
             }
 
-            Rectangle {
+            profile_combo := EditableComboBox {
+                text <=> search_text;
+                placeholder-text: "Type to search...";
+                current-index <=> current_highlighted_profile_index;
+                enabled: !busy && versions.length > 0 && !profiles_fetch_failed;
                 horizontal-stretch: 1;
+                model: profiles;
+                is-open: profiles.length > 0 && selected_id == "";
+                item-height: Constants.autocomplete_element_height;
 
-                profile_search := LineEdit {
-                    width: 100%;
-                    text <=> search_text;
-                    placeholder_text: "Type to search...";
-                    enabled: !busy && versions.length > 0 && !profiles_fetch_failed;
-
-                    edited(text) => {
-                        profile_search_edited(text);
-                    }
-                    key-pressed(event) => {
-                        if (profile_search_key_pressed(event)) {
-                            return accept;
-                        }
-                        reject
-                    }
+                edited(text) => {
+                    profile_search_edited(text);
                 }
-
-                if (profiles.length > 0 && selected_id == ""): Rectangle {
-                    background: Palette.background;
-                    border-width: 1px;
-                    border-color: Palette.border;
-                    border-radius: 4px;
-                    // Shadow is invisible if clip is true
-                    clip: false;
-                    height: 200px;
-                    y: profile_search.height + 6px;
-
-                    drop-shadow-blur: 16px;
-                    drop-shadow-offset-y: 8px;
-                    drop-shadow-color: Palette.color-scheme == ColorScheme.dark ? rgba(0, 0, 0, 0.26) : rgba(0, 0, 0, 0.14);
-
-                    TouchArea {
-                        width: 100%;
-                        height: 100%;
-                    }
-
-                    ListView {
-                        height: parent.height;
-
-                        // Auto-scroll logic: ensure the keyboard-highlighted item is visible
-                        property <int> active_index: current_highlighted_profile_index;
-                        changed active_index => {
-                            if (self.active_index < 0) {
-                                return;
-                            }
-                            if (self.active_index * Constants.autocomplete_element_height < -self.viewport-y) {
-                                self.viewport-y = -self.active_index * Constants.autocomplete_element_height;
-                            } else if ((self.active_index + 1) * Constants.autocomplete_element_height > -self.viewport-y + self.height) {
-                                self.viewport-y = -((self.active_index + 1) * Constants.autocomplete_element_height - self.height);
-                            }
-                        }
-
-                        for profile[index] in profiles: Rectangle {
-                            height: Constants.autocomplete_element_height;
-
-                            item_bg := Rectangle {
-                                x: 4px;
-                                y: 2px;
-                                height: parent.height - 4px;
-                                width: parent.width - 8px;
-                                border-radius: 4px;
-                                background: index == current_highlighted_profile_index ? Palette.control-background : item_touch.has-hover ? Palette.alternate-background : transparent;
-                                animate background { duration: 125ms; }
-                            }
-
-                            // Selection marker (Fluent style)
-                            Rectangle {
-                                x: 8px;
-                                y: (parent.height - self.height) / 2;
-                                width: 3px;
-                                height: index == current_highlighted_profile_index ? 16px : 0px;
-                                background: Palette.accent-background;
-                                border-radius: 2px;
-                                opacity: index == current_highlighted_profile_index ? 1.0 : 0.0;
-                                animate height, opacity {
-                                    duration: 150ms;
-                                    easing: ease-out;
-                                }
-                            }
-
-                            Text {
-                                x: 20px;
-                                text: profile;
-                                vertical-alignment: center;
-                                color: Palette.foreground;
-                                animate color { duration: 125ms; }
-                            }
-
-                            item_touch := TouchArea {
-                                clicked => {
-                                    profile_selected(profile);
-                                }
-                            }
-                        }
-                    }
+                key_pressed(event) => {
+                    return profile_search_key_pressed(event);
+                }
+                selected(item) => {
+                    profile_selected(item);
                 }
             }
         }
