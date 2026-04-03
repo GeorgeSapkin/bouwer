@@ -50,11 +50,21 @@ const BUILD_MILESTONES: &[(&str, f32, &str)] = &[
     ("Calculating checksums", 0.9, "Calculating checksums"),
 ];
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum Notification {
     Info,
     Warning,
     Error,
+}
+
+impl Notification {
+    fn log(self, text: &str) {
+        match self {
+            Self::Error => eprintln!("Error: {text}"),
+            Self::Warning => eprintln!("Warning: {text}"),
+            Self::Info => println!("{text}"),
+        }
+    }
 }
 
 #[derive(Default, Clone)]
@@ -383,7 +393,7 @@ fn on_download(
         ui.set_progress_visible(true);
         ui.set_progress_value(0.0);
 
-        set_notification(Notification::Info, &ui, "");
+        set_notification(Notification::Info, &ui, None);
     });
 
     let ui_weak = ui_weak.clone();
@@ -421,7 +431,7 @@ fn on_download(
                     Err(e) => {
                         let msg = format!("Pull error: {e}");
                         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                            set_notification(Notification::Error, &ui, &msg);
+                            set_notification(Notification::Error, &ui, Some(&msg));
                         });
                         break;
                     }
@@ -835,9 +845,7 @@ fn init(ui: &AppWindow, state: &AppState, client: OpenWrtClient, containers: &Co
 
         let filtered = filter_versions(&versions, show_rcs);
         let Some(first_version) = filtered.first().map(ToString::to_string) else {
-            let _ = ui_weak.upgrade_in_event_loop(|ui| {
-                set_notification(Notification::Info, &ui, "No OpenWrt versions found.");
-            });
+            show_error(&ui_weak, "No OpenWrt versions found.", None);
             return; // No versions, nothing to load
         };
 
@@ -1110,12 +1118,10 @@ async fn load_preset_from_path(
         ui.set_removed_packages_text(removed_str.into());
         ui.set_busy(false);
 
-        let info_msg = if !preset_series.is_empty() && preset_series != current_series {
-            format!("Package list from preset series {preset_series} might be incompatible with {current_series}.")
-        } else {
-            String::new()
-        };
-        set_notification(Notification::Warning, &ui, &info_msg);
+        if !preset_series.is_empty() && preset_series != current_series {
+            let info_msg = format!("Package list from preset series {preset_series} might be incompatible with {current_series}.");
+            set_notification(Notification::Warning, &ui, Some(&info_msg));
+        }
 
         state.update_with(target, profile_id, original_pkgs);
 
@@ -1200,7 +1206,7 @@ fn reset_profile_info(ui: &AppWindow, state: &AppState) {
 
     state.reset();
 
-    set_notification(Notification::Info, ui, "");
+    set_notification(Notification::Info, ui, None);
 }
 
 async fn set_image_exists(
@@ -1220,9 +1226,9 @@ async fn set_image_exists(
             Notification::Info,
             &ui,
             if exists {
-                ""
+                None
             } else {
-                "Image builder not found locally. Please download it first."
+                Some("Image builder not found locally. Please download it first.")
             },
         );
     });
@@ -1230,36 +1236,33 @@ async fn set_image_exists(
     exists
 }
 
-fn set_notification(t: Notification, ui: &AppWindow, text: &str) {
-    let is_empty = text.is_empty();
+fn set_notification(t: Notification, ui: &AppWindow, text: Option<&str>) {
+    let (is_err, is_warn, msg) = if let Some(msg) = text {
+        t.log(msg);
+        (
+            t == Notification::Error,
+            t == Notification::Warning,
+            msg.into(),
+        )
+    } else {
+        (false, false, SharedString::default())
+    };
 
-    if !is_empty {
-        match t {
-            Notification::Error => eprintln!("Error: {text}"),
-            Notification::Warning => eprintln!("Warning: {text}"),
-            Notification::Info => println!("{text}"),
-        }
-    }
-
-    ui.set_notification_is_error(!is_empty && matches!(t, Notification::Error));
-    ui.set_notification_is_warning(!is_empty && matches!(t, Notification::Warning));
-    ui.set_notification(text.into());
+    ui.set_notification_is_error(is_err);
+    ui.set_notification_is_warning(is_warn);
+    ui.set_notification(msg);
 }
 
 fn show_error(
     ui_weak: &slint::Weak<AppWindow>,
     msg: &str,
     e: Option<Box<dyn std::error::Error + Send + Sync>>,
-) {
-    let full_message = if let Some(e) = e {
-        format!("{msg}: {e}")
-    } else {
-        msg.to_string()
-    };
-    eprintln!("{full_message}");
+    if let Some(e) = e {
+        eprintln!("Error: {e}");
+    }
 
     let msg = msg.to_string();
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-        set_notification(Notification::Error, &ui, &msg);
+        set_notification(Notification::Error, &ui, Some(&msg));
     });
 }
