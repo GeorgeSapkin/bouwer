@@ -6,20 +6,29 @@ use bollard::container::LogOutput;
 use bollard::errors::Error as BollardError;
 use bollard::models::CreateImageInfo;
 use futures_util::Stream;
+use std::path::{Path, PathBuf};
 
 use crate::containers::{ContainerGuard, Containers, LogStreamExt, Volume};
 
 pub struct ImageBuilder {
+    build_path: PathBuf,
     containers: Containers,
     image_tag: String,
 }
 
 impl ImageBuilder {
-    pub fn new(containers: Containers, image_base: &str, version: &str, target: &str) -> Self {
+    pub fn new(
+        containers: Containers,
+        image_base: &str,
+        build_path: &Path,
+        version: &str,
+        target: &str,
+    ) -> Self {
         let target_slug = target.replace('/', "-");
         let image_tag = format!("{image_base}:{target_slug}-{version}");
 
         Self {
+            build_path: build_path.to_path_buf(),
             containers,
             image_tag,
         }
@@ -43,7 +52,7 @@ impl ImageBuilder {
             !overlay_path.is_empty(),
         );
 
-        let volumes = Self::get_build_volumes(overlay_path);
+        let volumes = self.get_build_volumes(overlay_path);
         self.containers.run(&self.image_tag, cmd, volumes).await
     }
 
@@ -116,10 +125,9 @@ impl ImageBuilder {
         args
     }
 
-    fn get_build_volumes(overlay_path: &str) -> Vec<Volume> {
-        let temp_base = std::env::temp_dir().join("bouwer");
-        let bin_path = temp_base.join("bin");
-        let dl_path = temp_base.join("dl");
+    fn get_build_volumes(&self, overlay_path: &str) -> Vec<Volume> {
+        let bin_path = self.build_path.join("bin");
+        let dl_path = self.build_path.join("dl");
         let mut volumes = vec![
             Volume {
                 src: bin_path.display().to_string(),

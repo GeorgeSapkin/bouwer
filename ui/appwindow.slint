@@ -39,6 +39,7 @@ export component AppWindow inherits Window {
     in property <string> selected_target: "";
     in property <[string]> versions: [];
 
+    in-out property <string> build_path_text: "";
     in-out property <string> build_status: "";
     in-out property <int> current_highlighted_profile_index: -1;
     in-out property <string> disabled_service_text: "";
@@ -50,17 +51,19 @@ export component AppWindow inherits Window {
     in-out property <string> search_text: "";
     in-out property <bool> show_rcs: false;
 
+    callback build_path_edited(string);
     callback build_requested(string);
     callback download_requested();
     callback load_preset_requested();
     callback open_build_folder_requested();
-    callback open_overlay_folder_requested();
     callback packages_edited(string);
     callback profile_search_edited(string);
     callback profile_search_key_pressed(KeyEvent) -> bool;
     callback profile_selected(string);
     callback request_profile_search_focus();
     callback save_preset_requested(string, string, string, string, string, string, string);
+    callback select_build_folder_requested();
+    callback select_overlay_folder_requested();
     callback show_rcs_toggled(bool);
     callback version_changed(string);
 
@@ -410,10 +413,12 @@ export component AppWindow inherits Window {
 
                     HorizontalBox {
                         padding: 0px;
-                        Text {
-                            text: "Overlay path:";
+                        overlay_text :=Text {
+                            text: "Overlay folder:";
                             font-size: 14px;
+                            horizontal-alignment: right;
                             vertical-alignment: center;
+                            width: 100px;
                         }
 
                         overlay_path_text := LineEdit {
@@ -425,9 +430,38 @@ export component AppWindow inherits Window {
 
                         Button {
                             text: "Select folder";
-                            enabled: !busy && !profiles_fetch_failed;
+                            enabled: !busy && image_exists;
                             clicked => {
-                                open_overlay_folder_requested();
+                                select_overlay_folder_requested();
+                            }
+                        }
+                    }
+
+                    HorizontalBox {
+                        padding: 0px;
+                        Text {
+                            text: "Build folder:";
+                            font-size: 14px;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                            width: overlay_text.width;
+                        }
+
+                        build_path_text := LineEdit {
+                            text <=> root.build_path_text;
+                            enabled: !busy;
+                            placeholder_text: "none";
+                            read-only: false;
+                            edited(text) => {
+                                build_path_edited(text);
+                            }
+                        }
+
+                        Button {
+                            text: "Select folder";
+                            enabled: !busy;
+                            clicked => {
+                                select_build_folder_requested();
                             }
                         }
                     }
@@ -444,8 +478,8 @@ export component AppWindow inherits Window {
             }
 
             Button {
-                text: "Open firmware build folder";
-                enabled: !busy && !profiles_fetch_failed;
+                text: "Open build folder";
+                enabled: !busy && image_exists;
                 clicked => {
                     open_build_folder_requested();
                 }
