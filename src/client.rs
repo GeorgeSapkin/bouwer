@@ -21,24 +21,21 @@ impl OpenWrtClient {
         }
     }
 
-    pub async fn fetch_profiles(
-        &self,
-        version: &str,
-    ) -> Result<Vec<Profile>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn fetch_profiles(&self, version: &str) -> anyhow::Result<Vec<Profile>> {
         if let Some(profiles) = self.cache.get_profiles(version).await {
             return Ok(profiles);
         }
 
         let url = format!("{}/releases/{version}/.overview.json", self.base_url);
         println!("Fetching profiles from {url}");
-        let profiles = tokio::task::spawn_blocking(move || {
+        let profiles = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Profile>> {
             let mut data: OpenWrtOverview = ureq::get(&url)
                 .header("User-Agent", USER_AGENT)
                 .call()?
                 .body_mut()
                 .read_json()?;
             data.profiles.sort_by(|a, b| a.id.cmp(&b.id));
-            Ok::<Vec<Profile>, Box<dyn std::error::Error + Send + Sync>>(data.profiles)
+            Ok(data.profiles)
         })
         .await??;
 
@@ -47,9 +44,7 @@ impl OpenWrtClient {
         Ok(profiles)
     }
 
-    pub async fn fetch_versions(
-        &self,
-    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn fetch_versions(&self) -> anyhow::Result<Vec<String>> {
         let url = format!("{}/.versions.json", self.base_url);
         println!("Fetching versions from {url}");
         tokio::task::spawn_blocking(move || {

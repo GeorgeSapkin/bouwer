@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
+use anyhow::Context;
 use bollard::container::LogOutput;
 use chrono::Local;
 use futures_util::StreamExt;
@@ -104,9 +105,9 @@ impl AppState {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     let backend = i_slint_backend_winit::Backend::new()?;
-    slint::platform::set_platform(Box::new(backend)).map_err(|_| "Failed to set Slint platform")?;
+    slint::platform::set_platform(Box::new(backend)).context("Failed to set Slint platform")?;
 
     let ui = AppWindow::new()?;
     let state = AppState::default();
@@ -957,7 +958,7 @@ async fn fetch_packages_for_profile(
     version: &str,
     target: &str,
     profile_id: &str,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+) -> anyhow::Result<String> {
     if let Some(packages) = cache.get_packages(version, target, profile_id).await {
         return Ok(packages);
     }
@@ -1010,7 +1011,7 @@ async fn load_preset_from_path(
     path: &Path,
     cache: MetadataCache,
     containers: Containers,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> anyhow::Result<()> {
     let content = tokio::fs::read_to_string(&path).await?;
     let preset: Preset = serde_json::from_str(&content)?;
     let target_id = &preset.target;
@@ -1020,7 +1021,7 @@ async fn load_preset_from_path(
         let profiles = state
             .profiles
             .read()
-            .map_err(|_| "Profiles lock poisoned")?;
+            .map_err(|_| anyhow::anyhow!("Profiles lock poisoned"))?;
         profiles
             .iter()
             .find(|p| &p.id == profile_id && &p.target == target_id)
@@ -1034,7 +1035,9 @@ async fn load_preset_from_path(
     };
 
     let (name, model, target) = found.ok_or_else(|| {
-        format!("Profile '{profile_id}' for target '{target_id}' not found in current version")
+        anyhow::anyhow!(
+            "Profile '{profile_id}' for target '{target_id}' not found in current version"
+        )
     })?;
 
     ui_weak.upgrade_in_event_loop({
@@ -1055,7 +1058,7 @@ async fn load_preset_from_path(
     let version = state
         .selected_version
         .read()
-        .map_err(|_| "Version lock poisoned")?
+        .map_err(|_| anyhow::anyhow!("Version lock poisoned"))?
         .clone();
 
     let current_series = get_release_series(&version);
@@ -1253,10 +1256,7 @@ fn set_notification(t: Notification, ui: &AppWindow, text: Option<&str>) {
     ui.set_notification(msg);
 }
 
-fn show_error(
-    ui_weak: &slint::Weak<AppWindow>,
-    msg: &str,
-    e: Option<Box<dyn std::error::Error + Send + Sync>>,
+fn show_error(ui_weak: &slint::Weak<AppWindow>, msg: &str, e: Option<anyhow::Error>) {
     if let Some(e) = e {
         eprintln!("Error: {e}");
     }

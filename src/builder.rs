@@ -33,10 +33,7 @@ impl ImageBuilder {
         rootfs_size: &str,
         disabled_services: &str,
         overlay_path: &str,
-    ) -> Result<
-        ContainerGuard<impl Stream<Item = Result<LogOutput, BollardError>>>,
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
+    ) -> anyhow::Result<ContainerGuard<impl Stream<Item = Result<LogOutput, BollardError>>>> {
         let cmd = Self::create_build_args(
             profile_id,
             packages,
@@ -58,10 +55,7 @@ impl ImageBuilder {
         self.containers.image_exists(&self.image_tag).await
     }
 
-    pub async fn fetch_package_list(
-        &self,
-        profile_id: &str,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn fetch_package_list(&self, profile_id: &str) -> anyhow::Result<String> {
         let stdout = {
             let stream = self
                 .containers

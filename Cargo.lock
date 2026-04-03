@@ -523,6 +523,7 @@ dependencies = [
 name = "bouwer"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bollard",
  "chrono",
  "futures-util",

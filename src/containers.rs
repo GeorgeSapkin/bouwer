@@ -95,7 +95,7 @@ impl<S> LogStreamExt for ContainerGuard<S> where
 }
 
 impl Containers {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new() -> anyhow::Result<Self> {
         let docker = if let Ok(host) =
             env::var("DOCKER_HOST").or_else(|_| env::var("CONTAINER_HOST"))
         {
@@ -167,10 +167,7 @@ impl Containers {
         image_tag: &str,
         cmd: Vec<String>,
         volumes: Vec<Volume>,
-    ) -> Result<
-        ContainerGuard<impl Stream<Item = Result<LogOutput, BollardError>>>,
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
+    ) -> anyhow::Result<ContainerGuard<impl Stream<Item = Result<LogOutput, BollardError>>>> {
         let binds = if volumes.is_empty() {
             None
         } else {
