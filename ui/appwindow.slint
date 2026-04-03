@@ -19,6 +19,7 @@ import {
 } from "std-widgets.slint";
 
 import { Notification } from "notification.slint";
+import { Tooltip } from "tooltip.slint";
 
 global Constants {
     in-out property <length> autocomplete_element_height: 40px;
@@ -330,10 +331,26 @@ export component AppWindow inherits Window {
 
                     HorizontalBox {
                         padding: 0px;
-                        Text {
-                            text: "Extra image name:";
-                            font-size: 14px;
-                            vertical-alignment: center;
+                        z: 100;
+
+                        extra_image_rect := Rectangle {
+                            extra_image_label := Text {
+                                text: "Extra image name:";
+                                font-size: 14px;
+                                vertical-alignment: center;
+                            }
+
+                            extra_image_touch := TouchArea {
+                                width: extra_image_rect.width;
+                                height: extra_image_rect.height;
+
+                                extra_image_tooltip := Tooltip {
+                                    text: "Extra name appended to the generated firmware image filenames.";
+                                    active: extra_image_touch.has-hover;
+                                    x: 0;
+                                    y: parent.height + 8px;
+                                }
+                            }
                         }
 
                         extra_image_name := LineEdit {
@@ -343,10 +360,28 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    Text {
-                        text: "Packages (space separated):";
-                        font-size: 14px;
-                        horizontal-alignment: left;
+                    packages_rect := Rectangle {
+                        z: 90;
+                        HorizontalBox {
+                            padding: 0px;
+                            Text {
+                                text: "Packages:";
+                                font-size: 14px;
+                                horizontal-alignment: left;
+                            }
+                        }
+
+                        packages_touch := TouchArea {
+                            width: packages_rect.width;
+                            height: packages_rect.height;
+
+                            packages_tooltip := Tooltip {
+                                text: "Space-separated list of packages to include in the firmware.";
+                                active: packages_touch.has-hover;
+                                x: 0;
+                                y: parent.height + 8px;
+                            }
+                        }
                     }
 
                     packages_text := TextEdit {
@@ -359,10 +394,30 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    Text {
-                        text: "Removed default packages:";
-                        font-size: 14px;
-                        horizontal-alignment: left;
+                    removed_packages_rect := Rectangle {
+                        z: 80;
+
+                        VerticalBox {
+                            padding: 0px;
+
+                            Text {
+                                text: "Removed default packages:";
+                                font-size: 14px;
+                                horizontal-alignment: left;
+                            }
+                        }
+
+                        remove_packages_touch := TouchArea {
+                            width: removed_packages_rect.width;
+                            height: removed_packages_rect.height;
+
+                            remove_packages_tooltip := Tooltip {
+                                text: "Default packages that are excluded from the firmware.";
+                                active: remove_packages_touch.has-hover;
+                                x: 0;
+                                y: parent.height + 8px;
+                            }
+                        }
                     }
 
                     removed_packages_text := TextEdit {
@@ -384,10 +439,25 @@ export component AppWindow inherits Window {
 
                     HorizontalBox {
                         padding: 0px;
-                        Text {
-                            text: "RootFS size (in MiB):";
-                            font-size: 14px;
-                            vertical-alignment: center;
+                        z: 100;
+                        rootfs_size_rect := Rectangle {
+                            Text {
+                                text: "RootFS size:";
+                                font-size: 14px;
+                                vertical-alignment: center;
+                            }
+
+                            rootfs_size_touch := TouchArea {
+                                width: rootfs_size_rect.width;
+                                height: rootfs_size_rect.height;
+
+                                rootfs_size_tooltip := Tooltip {
+                                    text: "Size of the root filesystem in MiB.";
+                                    active: rootfs_size_touch.has-hover;
+                                    x: 0;
+                                    y: parent.height + 8px;
+                                }
+                            }
                         }
 
                         rootfs_size := LineEdit {
@@ -398,10 +468,28 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    Text {
-                        text: "Disabled services (space separated):";
-                        font-size: 14px;
-                        horizontal-alignment: left;
+                    disabled_services_rect := Rectangle {
+                        z: 90;
+                        HorizontalBox {
+                            padding: 0px;
+                            Text {
+                                text: "Disabled services:";
+                                font-size: 14px;
+                                horizontal-alignment: left;
+                            }
+                        }
+
+                        disabled_services_touch := TouchArea {
+                            width: disabled_services_rect.width;
+                            height: disabled_services_rect.height;
+
+                            disabled_services_tooltip := Tooltip {
+                                text: "Space-separated list of services to disable in the firmware.";
+                                active: disabled_services_touch.has-hover;
+                                x: 0;
+                                y: parent.height + 8px;
+                            }
+                        }
                     }
 
                     disabled_service_text := TextEdit {
@@ -413,12 +501,29 @@ export component AppWindow inherits Window {
 
                     HorizontalBox {
                         padding: 0px;
-                        overlay_text :=Text {
-                            text: "Overlay folder:";
-                            font-size: 14px;
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
+                        z: 80;
+
+                        overlay_path_rect := Rectangle {
                             width: 100px;
+                            overlay_path_label := Text {
+                                text: "Overlay folder:";
+                                font-size: 14px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                                width: parent.width;
+                            }
+
+                            overlay_path_touch := TouchArea {
+                                width: overlay_path_rect.width;
+                                height: overlay_path_rect.height;
+
+                                overlay_path_tooltip := Tooltip {
+                                    text: "Path to the overlay folder which content will be added on top of the root filesystem.";
+                                    active: overlay_path_touch.has-hover;
+                                    x: 0;
+                                    y: parent.height + 8px;
+                                }
+                            }
                         }
 
                         overlay_path_text := LineEdit {
@@ -439,12 +544,29 @@ export component AppWindow inherits Window {
 
                     HorizontalBox {
                         padding: 0px;
-                        Text {
-                            text: "Build folder:";
-                            font-size: 14px;
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
-                            width: overlay_text.width;
+                        z: 70;
+
+                        build_path_rect := Rectangle {
+                            width: overlay_path_rect.width;
+                            build_path_label := Text {
+                                text: "Build folder:";
+                                font-size: 14px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                                width: parent.width;
+                            }
+
+                            build_path_touch := TouchArea {
+                                width: build_path_rect.width;
+                                height: build_path_rect.height;
+
+                                build_path_tooltip := Tooltip {
+                                    text: "Path to the build folder where the firmware images will be built.";
+                                    active: build_path_touch.has-hover;
+                                    x: 0;
+                                    y: parent.height + 8px;
+                                }
+                            }
                         }
 
                         build_path_text := LineEdit {

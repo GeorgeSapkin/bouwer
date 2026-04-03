@@ -1,0 +1,51 @@
+// Copyright (C) 2026 George Sapkin
+//
+// SPDX-License-Identifier: GPL-3.0-only
+
+import { Palette } from "std-widgets.slint";
+
+export component Tooltip inherits Rectangle {
+    in-out property <bool> active;
+    in property <string> text;
+
+    clip: true;
+    width: label.width + 16px;
+    height: label.height + 8px;
+    opacity: 0.0;
+
+    background: #e1f5fe;
+    border-color: #03a9f4;
+    border-radius: 4px;
+    border-width: 1px;
+    drop-shadow-blur: 16px;
+    drop-shadow-offset-y: 8px;
+    drop-shadow-color: Palette.color-scheme == ColorScheme.dark ? rgba(0, 0, 0, 0.26) : rgba(0, 0, 0, 0.14);
+
+    label := Text {
+        text: root.text;
+        color: #01579b;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    states [
+        visible when self.active: {
+            opacity: 1.0;
+            in {
+                animate opacity {
+                    duration: 250ms;
+                    delay: 250ms;
+                    easing: ease-in-out-elastic;
+                }
+            }
+            out {
+                animate opacity {
+                    duration: 250ms;
+                    delay: 250ms;
+                    easing: ease-in-out-elastic;
+                }
+            }
+        }
+    ]
+}
