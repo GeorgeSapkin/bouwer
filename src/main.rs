@@ -343,7 +343,7 @@ fn on_build(
         println!("Overlay path: {overlay_path}\n");
 
         let image_builder = get_image_builder(&version, &target);
-        let mut stream = image_builder
+        let stream = image_builder
             .build_firmware(
                 &profile_id,
                 &packages,
@@ -352,12 +352,25 @@ fn on_build(
                 &disabled_services,
                 &overlay_path,
             )
-            .await
-            .expect("Failed to start build container");
+            .await;
+
+        let mut stream = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                show_error(&ui_weak, "Failed to build firmware", Some(e));
+                let _ = ui_weak.upgrade_in_event_loop(|ui| {
+                    ui.set_build_status(SharedString::from("Build failed"));
+                    ui.set_progress_visible(false);
+                    ui.set_busy(false);
+                });
+                return;
+            }
+        };
 
         let mut needs_update = false;
         let mut current_progress = 0.0f32;
         let mut current_status = String::new();
+        let mut success = true;
 
         while let Some(log_result) = stream.next().await {
             let line = match log_result {
@@ -365,7 +378,8 @@ fn on_build(
                     String::from_utf8_lossy(&message).to_string()
                 }
                 Err(e) => {
-                    eprintln!("Log stream error: {e}");
+                    show_error(&ui_weak, "Error receiving build logs", Some(e.into()));
+                    success = false;
                     break;
                 }
                 _ => continue,
@@ -385,7 +399,7 @@ fn on_build(
                     current_status = new_status;
                 }
 
-                current_progress += 0.0002;
+                current_progress += 0.0005;
                 needs_update = true;
             }
 
@@ -401,17 +415,27 @@ fn on_build(
             }
         }
 
-        println!("Build completed");
-        AsyncWriteExt::write_all(&mut log_file, current_status.as_bytes())
-            .await
-            .unwrap();
+        drop(stream);
 
-        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.set_build_status(SharedString::from("Build completed"));
-            ui.set_progress_value(1.0);
-            ui.set_progress_visible(false);
-            ui.set_busy(false);
-        });
+        if success {
+            println!("Build completed");
+            AsyncWriteExt::write_all(&mut log_file, current_status.as_bytes())
+                .await
+                .unwrap();
+
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.set_build_status(SharedString::from("Build completed"));
+                ui.set_progress_value(1.0);
+                ui.set_progress_visible(false);
+                ui.set_busy(false);
+            });
+        } else {
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.set_build_status(SharedString::from("Build failed"));
+                ui.set_progress_visible(false);
+                ui.set_busy(false);
+            });
+        }
     });
 }
 
@@ -441,40 +465,40 @@ fn on_download(
         (s.selected_version.clone(), s.selected_target.clone())
     };
     tokio::spawn(async move {
-        {
-            let image_builder = get_image_builder(&version, &target);
-            let mut stream = image_builder.download();
-            let mut current_progress = 0.0f32;
+        let image_builder = get_image_builder(&version, &target);
+        let mut stream = image_builder.download();
+        let mut current_progress = 0.0f32;
 
-            while let Some(pull_result) = stream.next().await {
-                match pull_result {
-                    Ok(info) => {
-                        if let Some(status) = info.status {
-                            if let Some(pd) = info.progress_detail {
-                                if let (Some(current), Some(total)) = (pd.current, pd.total)
-                                    && total > 0
-                                {
-                                    current_progress = current as f32 / total as f32;
-                                }
-                            } else {
-                                current_progress = (current_progress + 0.001).min(0.99);
+        while let Some(pull_result) = stream.next().await {
+            match pull_result {
+                Ok(info) => {
+                    if let Some(status) = info.status {
+                        if let Some(pd) = info.progress_detail {
+                            if let (Some(current), Some(total)) = (pd.current, pd.total)
+                                && total > 0
+                            {
+                                current_progress = current as f32 / total as f32;
                             }
-                            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                                ui.set_build_status(status.into());
-                                ui.set_progress_value(current_progress);
-                            });
+                        } else {
+                            current_progress = (current_progress + 0.001).min(0.99);
                         }
-                    }
-                    Err(e) => {
-                        let msg = format!("Pull error: {e}");
                         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                            set_notification(Notification::Error, &ui, Some(&msg));
+                            ui.set_build_status(status.into());
+                            ui.set_progress_value(current_progress);
                         });
-                        break;
                     }
+                }
+                Err(e) => {
+                    let msg = format!("Pull error: {e}");
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        set_notification(Notification::Error, &ui, Some(&msg));
+                    });
+                    break;
                 }
             }
         }
+
+        drop(stream);
 
         let exists = set_image_exists(&ui_weak, &get_image_builder, &version, &target).await;
         if exists {
@@ -985,33 +1009,33 @@ async fn fetch_and_update_packages(
         )
     };
 
-    let mut packages =
-        fetch_packages_for_profile(&cache, get_image_builder, &version, &target, &profile_id)
-            .await
-            .unwrap_or_else(|e| {
-                eprintln!("Error fetching packages: {e}");
-                EXTRA_PACKAGES.to_string()
-            });
+    let packages =
+        fetch_packages_for_profile(&cache, get_image_builder, &version, &target, &profile_id).await;
 
-    if !packages.is_empty() {
-        packages = packages + " " + EXTRA_PACKAGES;
-    }
+    let packages = match packages {
+        Ok(p) => {
+            let packages = p + " " + EXTRA_PACKAGES;
 
-    let mut pkgs_vec = packages
-        .split_whitespace()
-        .map(String::from)
-        .collect::<Vec<_>>();
-    pkgs_vec.sort_unstable();
-    pkgs_vec.dedup();
+            let mut pkgs_vec = packages
+                .split_whitespace()
+                .map(String::from)
+                .collect::<Vec<_>>();
+            pkgs_vec.sort_unstable();
+            pkgs_vec.dedup();
 
-    if let Ok(mut s) = state.write() {
-        s.packages.clone_from(&pkgs_vec);
-    }
+            if let Ok(mut s) = state.write() {
+                s.packages.clone_from(&pkgs_vec);
+            }
+            pkgs_vec.join(" ")
+        }
+        Err(e) => {
+            show_error(ui_weak, "Error fetching package list for profile", Some(e));
+            String::new()
+        }
+    };
 
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-        let packages_str = pkgs_vec.join(" ");
-
-        ui.set_packages_text(packages_str.into());
+        ui.set_packages_text(packages.into());
         ui.set_removed_packages_text(SharedString::new());
 
         if !already_busy {
