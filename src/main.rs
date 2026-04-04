@@ -38,6 +38,7 @@ use profiles::{
 
 slint::include_modules!();
 
+const ABOUT_URL: &str = "https://github.com/georgesapkin/bouwer";
 const BASE_URL: &str = "https://downloads.openwrt.org";
 const EXTRA_PACKAGES: &str = "luci luci-app-attendedsysupgrade";
 const IMAGE_NAME: &str = "openwrt/imagebuilder";
@@ -133,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     ui.set_build_path_text(config.build_path.to_string_lossy().to_string().into());
+    ui.set_version(env!("CARGO_PKG_VERSION").into());
     ui.set_busy(true);
     ui.run()?;
 
@@ -269,6 +271,12 @@ fn setup_callbacks(
         let state = state.clone();
         let client = client.clone();
         move |version| on_version_changed(&ui_weak, &state, &client, &version)
+    });
+
+    ui.on_open_github_link(|| {
+        if let Err(e) = webbrowser::open(ABOUT_URL) {
+            eprintln!("Failed to open GitHub link: {e}");
+        }
     });
 }
 

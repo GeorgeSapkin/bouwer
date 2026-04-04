@@ -1,0 +1,142 @@
+// Copyright (C) 2026 George Sapkin
+//
+// SPDX-License-Identifier: GPL-3.0-only
+
+import { Button, VerticalBox, HorizontalBox, Palette } from "std-widgets.slint";
+
+export component AboutDialog inherits Rectangle {
+    in property <string> version;
+
+    in-out property <bool> show;
+
+    callback open_github_link();
+
+    property <float> open-progress: show ? 1.0 : 0.0;
+
+    visible: open-progress > 0.01;
+    background: rgba(0, 0, 0, 0.4 * open-progress);
+
+    animate open-progress {
+        duration: 250ms;
+        easing: ease-in-out;
+    }
+
+    // Block events to underlying UI and provide light-dismiss (click outside
+    // to close)
+    TouchArea {
+        clicked => {
+            root.show = false;
+        }
+    }
+
+    Rectangle {
+        width: 400px;
+        height: 470px;
+        opacity: open-progress;
+        transform-scale-x: 0.95 + (open-progress * 0.05);
+        transform-scale-y: self.transform-scale-x;
+
+        background: Palette.background;
+        border-width: 1px;
+        border-color: Palette.border;
+        border-radius: 8px;
+
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: Palette.color-scheme == ColorScheme.dark ? rgba(0, 0, 0, 0.26) : rgba(0, 0, 0, 0.14);
+
+        // Block events from falling through to the background dismiss area
+        TouchArea { }
+
+        VerticalBox {
+            padding: 20px;
+            padding-bottom: 8px;
+            spacing: 15px;
+
+            HorizontalBox {
+                alignment: center;
+                padding: 0;
+                Image {
+                    source: @image-url("../assets/logo.svg");
+                    width: 150px;
+                    height: 150px;
+                    horizontal-alignment: center;
+                    image-rendering: pixelated;
+                }
+            }
+
+            VerticalBox {
+                padding: 0;
+                spacing: 5px;
+
+                Text {
+                    text: "Bouwer";
+                    font-size: 24px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    color: Palette.foreground;
+                }
+
+                Text {
+                    text: root.version;
+                    color: Palette.foreground;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                }
+            }
+
+            Rectangle {
+                background: Palette.control-background;
+                border-width: 1px;
+                border-color: Palette.border;
+                border-radius: 4px;
+
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 15px;
+
+                    Text {
+                        text: "A simple interface for building custom OpenWrt firmware images using the official image builders.";
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+
+                    Text {
+                        text: "Copyright © 2026 George Sapkin";
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+
+                    link_touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.open_github_link();
+                        }
+                        Text {
+                            text: "github.com/georgesapkin/bouwer";
+                            color: link_touch.has-hover ? Palette.accent-background : Palette.foreground;
+                            wrap: word-wrap;
+                            horizontal-alignment: center;
+                            animate color { duration: 100ms; }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+            }
+
+            HorizontalBox {
+                alignment: center;
+                Button {
+                    text: "Close";
+                    primary: true;
+                    clicked => {
+                        root.show = false;
+                    }
+                }
+            }
+        }
+    }
+}

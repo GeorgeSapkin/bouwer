@@ -18,6 +18,7 @@ import {
     VerticalBox,
 } from "std-widgets.slint";
 
+import { AboutDialog } from "about.slint";
 import { EditableComboBox } from "combobox.slint";
 import { Notification } from "notification.slint";
 import { Tooltip } from "tooltip.slint";
@@ -39,6 +40,7 @@ export component AppWindow inherits Window {
     in property <string> selected_id: "";
     in property <string> selected_model: "";
     in property <string> selected_target: "";
+    in property <string> version: "";
     in property <[string]> versions: [];
 
     in-out property <string> build_path_text: "";
@@ -51,6 +53,7 @@ export component AppWindow inherits Window {
     in-out property <string> packages_text: "";
     in-out property <string> rootfs_size_value: "";
     in-out property <string> search_text: "";
+    in-out property <bool> show_about: false;
     in-out property <bool> show_rcs: false;
 
     callback build_path_edited(string);
@@ -58,6 +61,7 @@ export component AppWindow inherits Window {
     callback download_requested();
     callback load_preset_requested();
     callback open_build_folder_requested();
+    callback open_github_link();
     callback packages_edited(string);
     callback profile_search_edited(string);
     callback profile_search_key_pressed(KeyEvent) -> bool;
@@ -73,9 +77,20 @@ export component AppWindow inherits Window {
         profile_combo.focus();
     }
 
-    title: "Bouwer - OpenWrt Firmware Builder";
+    title: "Bouwer";
+    icon: @image-url("../assets/logo_no_shadow.svg");
     min-width: 700px;
     min-height: 700px;
+
+    AboutDialog {
+        show <=> root.show_about;
+        version: root.version;
+        z: 1000;
+
+        open_github_link => {
+            root.open_github_link();
+        }
+    }
 
     Notification {
         text <=> root.notification;
@@ -111,6 +126,31 @@ export component AppWindow inherits Window {
                 checked <=> show_rcs;
                 toggled => {
                     show_rcs_toggled(self.checked);
+                }
+            }
+
+            about_icon := Rectangle {
+                width: 30px;
+                height: 30px;
+                border-radius: 4px;
+                background: about_touch.has-hover ? Palette.alternate-background : transparent;
+                animate background {
+                    duration: 150ms;
+                    easing: ease-in-out;
+                }
+
+                Image {
+                    source: @image-url("../assets/logo.svg");
+                    width: 24px;
+                    height: 24px;
+                    horizontal-alignment: center;
+                    image-rendering: pixelated;
+                }
+
+                about_touch := TouchArea {
+                    clicked => {
+                        root.show_about = true;
+                    }
                 }
             }
         }
