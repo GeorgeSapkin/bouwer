@@ -333,7 +333,7 @@ fn on_build(
         });
 
         let build_path = { state.read().unwrap().config.build_path.clone() };
-        let build_folder_path = build_path.join("bin").join("targets").join(&target);
+        let build_folder_path = build_path.join(&target);
 
         let now = Local::now().format("%Y-%m-%d-%H-%M-%S");
         let filename = format!("build-{version}-{profile_id}-{now}.log");
@@ -632,7 +632,7 @@ fn on_open_build_folder(state: &AppState) {
         eprintln!("Cannot open folder: Version or Target is missing.");
         return;
     }
-    let build_folder_path = s.config.build_path.join("bin").join("targets").join(target);
+    let build_folder_path = s.config.build_path.join(target);
     open_dir(&build_folder_path);
 }
 

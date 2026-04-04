@@ -126,12 +126,11 @@ impl ImageBuilder {
     }
 
     fn get_build_volumes(&self, overlay_path: &str) -> Vec<Volume> {
-        let bin_path = self.build_path.join("bin");
         let dl_path = self.build_path.join("dl");
         let mut volumes = vec![
             Volume {
-                src: bin_path.display().to_string(),
-                dest: "/builder/bin".to_string(),
+                src: self.build_path.display().to_string(),
+                dest: "/builder/bin/targets".to_string(),
             },
             Volume {
                 src: dl_path.display().to_string(),
