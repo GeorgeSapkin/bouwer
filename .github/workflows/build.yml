@@ -15,7 +15,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt update
-          sudo apt install -y libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev
+          sudo apt install -y libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev upx-ucl
+
+      - name: Install dependencies
+        if: matrix.os == 'windows-latest'
+        run: choco install upx
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -27,6 +31,16 @@ jobs:
         run: cargo build --release
         env:
           RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '-C target-feature=+crt-static' || '' }}
+
+      - name: Compress binary
+        if: matrix.os == 'ubuntu-latest'
+        # based on --ultra-brute pass
+        run: upx --lzma --best --filter=0 target/release/bouwer
+
+      - name: Compress binary
+        if: matrix.os == 'windows-latest'
+        # based on --ultra-brute pass
+        run: upx --lzma --best --filter=0 target/release/bouwer.exe
 
       - name: Upload binary
         uses: actions/upload-artifact@v7
