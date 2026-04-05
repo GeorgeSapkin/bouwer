@@ -10,7 +10,7 @@ use chrono::Local;
 use futures_util::StreamExt;
 use slint::platform::Key;
 use slint::{Model, SharedString, VecModel};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -46,6 +46,7 @@ const EXTRA_PACKAGES: &str = "luci luci-app-attendedsysupgrade";
 const IMAGE_NAME: &str = "openwrt/imagebuilder";
 const MIN_SEARCH_CHARS: usize = 3;
 const MIN_SERIES: usize = 21;
+const SIZE_MIB: f32 = 1024.0 * 1024.0;
 
 const BUILD_MILESTONES: &[(&str, f32, &str)] = &[
     ("Generate local signing", 0.1, "Generating signing keys"),
@@ -371,6 +372,7 @@ fn on_build(
                 let _ = ui_weak.upgrade_in_event_loop(|ui| {
                     ui.set_build_status(SharedString::from("Build failed"));
                     ui.set_progress_visible(false);
+                    ui.set_progress_value(0.0);
                     ui.set_busy(false);
                 });
                 return;
@@ -443,6 +445,7 @@ fn on_build(
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
                 ui.set_build_status(SharedString::from("Build failed"));
                 ui.set_progress_visible(false);
+                ui.set_progress_value(0.0);
                 ui.set_busy(false);
             });
         }
@@ -478,28 +481,50 @@ fn on_download(
         let image_builder = get_image_builder(&version, &target);
         let mut stream = image_builder.download();
         let mut current_progress = 0.0f32;
+        let mut layers = HashMap::<String, (i64, i64)>::new();
 
         while let Some(pull_result) = stream.next().await {
             match pull_result {
                 Ok(info) => {
-                    if let Some(status) = info.status {
-                        if let Some(pd) = info.progress_detail {
-                            if let (Some(current), Some(total)) = (pd.current, pd.total)
-                                && total > 0
-                            {
-                                current_progress = current as f32 / total as f32;
-                            }
-                        } else {
-                            current_progress = (current_progress + 0.001).min(0.99);
-                        }
-                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                            ui.set_build_status(status.into());
-                            ui.set_progress_value(current_progress);
-                        });
+                    if let (Some(id), Some(pd)) = (info.id.as_ref(), info.progress_detail.as_ref())
+                        && let (Some(current), Some(total)) = (pd.current, pd.total)
+                        && total > 0
+                    {
+                        layers.insert(id.clone(), (current, total));
                     }
+
+                    let total_current: i64 = layers.values().map(|&(c, _)| c).sum();
+                    let total_sum: i64 = layers.values().map(|&(_, t)| t).sum();
+
+                    if total_sum > 0 {
+                        current_progress =
+                            current_progress.max(total_current as f32 / total_sum as f32);
+                    } else if info.progress_detail.is_none() {
+                        current_progress = (current_progress + 0.001).min(0.99);
+                    }
+
+                    let status_text: String = if total_sum > 0 {
+                        let current_mib = total_current as f32 / SIZE_MIB;
+                        let total_mib = total_sum as f32 / SIZE_MIB;
+                        format!("Downloading image builder: {current_mib:.2} / {total_mib:.2} MiB")
+                    } else {
+                        "Downloading image builder".to_string()
+                    };
+
+                    if !status_text.is_empty() {
+                        use std::io::{self, Write};
+                        print!("\r\x1b[K{status_text}");
+                        let _ = io::stdout().flush();
+                    }
+
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_build_status(status_text.into());
+                        ui.set_progress_value(current_progress);
+                    });
                 }
                 Err(e) => {
                     let msg = format!("Pull error: {e}");
+                    eprintln!("{msg}");
                     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
                         set_notification(Notification::Error, &ui, Some(&msg));
                     });
@@ -508,6 +533,7 @@ fn on_download(
             }
         }
 
+        println!();
         drop(stream);
 
         let exists = set_image_exists(&ui_weak, &get_image_builder, &version, &target).await;
@@ -517,6 +543,7 @@ fn on_download(
                 .upgrade_in_event_loop(move |ui| {
                     ui.set_build_status(SharedString::new());
                     ui.set_progress_visible(false);
+                    ui.set_progress_value(0.0);
                     ui.set_busy(false);
                 })
                 .unwrap();
@@ -524,6 +551,7 @@ fn on_download(
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
                 ui.set_build_status(SharedString::new());
                 ui.set_progress_visible(false);
+                ui.set_progress_value(0.0);
                 ui.set_busy(false);
 
                 let ui_weak = ui.as_weak();
@@ -1003,12 +1031,15 @@ async fn fetch_and_update_packages(
     get_image_builder: &GetImageBuilderFn,
     already_busy: bool,
 ) {
-    if !already_busy {
-        let _ = ui_weak.upgrade_in_event_loop(|ui| {
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        if !already_busy {
             ui.set_busy(true);
             ui.set_progress_visible(true);
-        });
-    }
+        }
+
+        ui.set_progress_value(0.0);
+        ui.set_build_status(SharedString::from("Fetching package list"));
+    });
 
     let (version, target, profile_id) = {
         let s = state.read().unwrap();
@@ -1049,10 +1080,11 @@ async fn fetch_and_update_packages(
         ui.set_removed_packages_text(SharedString::new());
 
         if !already_busy {
-            // TODO: do this outside of this?
             ui.set_progress_visible(false);
             ui.set_busy(false);
         }
+        ui.set_progress_value(0.0);
+        ui.set_build_status(SharedString::new());
 
         let ui_weak = ui.as_weak();
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
@@ -1307,6 +1339,7 @@ fn reset_profile_info(ui: &AppWindow, state: &AppState) {
     ui.set_overlay_path_text(SharedString::new());
     ui.set_packages_text(SharedString::new());
     ui.set_profiles_fetch_failed(false);
+    ui.set_progress_value(0.0);
     ui.set_progress_visible(false);
     ui.set_removed_packages_text(SharedString::new());
     ui.set_rootfs_size_value(SharedString::new());

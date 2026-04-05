@@ -606,9 +606,6 @@ export component AppWindow inherits Window {
                         missing_builder when !image_exists && build_status == "": {
                             text: "Missing image builder";
                         }
-                        loading_packages when busy && build_status == "": {
-                            text: "Loading package list";
-                        }
                         custom when build_status != "": {
                             text: build_status;
                         }
