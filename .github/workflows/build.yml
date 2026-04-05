@@ -1,0 +1,38 @@
+name: Build
+on: [push, pull_request]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt update
+          sudo apt install -y libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Enable Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+        env:
+          RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '-C target-feature=+crt-static' || '' }}
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: bouwer-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            target/release/bouwer
+            target/release/bouwer.exe
+          if-no-files-found: ignore
