@@ -13,12 +13,13 @@ pub struct Config {
 }
 
 impl Default for Config {
+    #[allow(clippy::used_underscore_binding)]
     fn default() -> Self {
         let build_path = std::env::temp_dir().join("bouwer");
-        let cache_path = if let Some(path) = home_dir() {
+        let cache_path = if let Some(_path) = home_dir() {
             #[cfg(target_os = "macos")]
             {
-                path.join("Library").join("Caches").join("bouwer")
+                _path.join("Library").join("Caches").join("bouwer")
             }
             #[cfg(target_os = "windows")]
             {
@@ -30,7 +31,7 @@ impl Default for Config {
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
                 std::env::var_os("XDG_CACHE_HOME")
-                    .map_or_else(|| path.join(".cache"), PathBuf::from)
+                    .map_or_else(|| _path.join(".cache"), PathBuf::from)
                     .join("bouwer")
             }
         } else {

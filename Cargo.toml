@@ -28,6 +28,7 @@ webbrowser = { version = "1.2.0", features = ["disable-wsl", "hardened"]}
 
 [build-dependencies]
 slint-build = "1.15"
+winresource = "0.1"
 
 [profile.release]
 codegen-units = 1
@@ -35,3 +36,9 @@ lto = true
 opt-level = "z"
 panic = "abort"
 strip = true
+
+[package.metadata.winresource]
+ProductName = "Bouwer"
+FileDescription = "Bouwer - OpenWrt firmware builder"
+LegalCopyright = "Copyright © 2026 George Sapkin"
+OriginalFilename = "bouwer.exe"
