@@ -106,6 +106,11 @@ type GetImageBuilderFn = Arc<dyn Fn(&str, &str) -> ImageBuilder + Send + Sync>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if std::env::args().any(|arg| arg == "--version" || arg == "-v") {
+        println!("bouwer v{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     let backend = i_slint_backend_winit::Backend::new()?;
     slint::platform::set_platform(Box::new(backend)).context("Failed to set Slint platform")?;
 
