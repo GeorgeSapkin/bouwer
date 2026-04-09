@@ -27,34 +27,41 @@ global Constants {
     in-out property <length> autocomplete_element_height: 40px;
 }
 
-export component AppWindow inherits Window {
-    in property <bool> busy: false;
-    in property <bool> image_exists: false;
-    in property <bool> notification_is_error: false;
-    in property <bool> notification_is_warning: false;
-    in property <bool> profiles_fetch_failed: false;
-    in property <[string]> profiles: [];
-    in property <float> progress_value: 0.0;
-    in property <bool> progress_visible: false;
-    in property <string> removed_packages_text: "";
-    in property <string> selected_id: "";
-    in property <string> selected_model: "";
-    in property <string> selected_target: "";
-    in property <string> version: "";
-    in property <[string]> versions: [];
+export struct AppState {
+    build_path_text: string,
+    busy: bool,
+    current_highlighted_profile_index: int,
+    disabled_service_text: string,
+    extra_image_name_text: string,
+    image_exists: bool,
+    notification: string,
+    notification_is_error: bool,
+    notification_is_warning: bool,
+    original_packages: [string],
+    overlay_path_text: string,
+    packages_text: string,
+    profiles_fetch_failed: bool,
+    profiles: [string],
+    progress_value: float,
+    progress_visible: bool,
+    removed_packages_text: string,
+    rootfs_size_value: string,
+    search_text: string,
+    selected_id: string,
+    selected_model: string,
+    selected_target: string,
+    selected_version: string,
+    show_about: bool,
+    show_rcs: bool,
+    status_text: string,
+    version: string,
+    versions: [string],
+}
 
-    in-out property <string> build_path_text: "";
-    in-out property <string> build_status: "";
-    in-out property <int> current_highlighted_profile_index: -1;
-    in-out property <string> disabled_service_text: "";
-    in-out property <string> extra_image_name_text: "";
-    in-out property <string> notification: "";
-    in-out property <string> overlay_path_text: "";
-    in-out property <string> packages_text: "";
-    in-out property <string> rootfs_size_value: "";
-    in-out property <string> search_text: "";
-    in-out property <bool> show_about: false;
-    in-out property <bool> show_rcs: false;
+export global StateBridge {
+    in-out property <AppState> state: {
+        current_highlighted_profile_index: -1,
+    };
 
     callback build_path_edited(string);
     callback build_requested(string);
@@ -66,12 +73,17 @@ export component AppWindow inherits Window {
     callback profile_search_edited(string);
     callback profile_search_key_pressed(KeyEvent) -> bool;
     callback profile_selected(string);
-    callback request_profile_search_focus();
     callback save_preset_requested(string, string, string, string, string, string, string);
     callback select_build_folder_requested();
     callback select_overlay_folder_requested();
     callback show_rcs_toggled(bool);
     callback version_changed(string);
+}
+
+export component AppWindow inherits Window {
+    property <AppState> state <=> StateBridge.state;
+
+    callback request_profile_search_focus();
 
     request_profile_search_focus => {
         profile_combo.focus();
@@ -83,19 +95,19 @@ export component AppWindow inherits Window {
     min-height: 700px;
 
     AboutDialog {
-        show <=> root.show_about;
-        version: root.version;
+        show <=> StateBridge.state.show_about;
+        version: root.state.version;
         z: 1000;
 
         open_github_link => {
-            root.open_github_link();
+            StateBridge.open_github_link();
         }
     }
 
     Notification {
-        text <=> root.notification;
-        is_error: root.notification_is_error;
-        is_warning: root.notification_is_warning;
+        text <=> StateBridge.state.notification;
+        is_error: root.state.notification_is_error;
+        is_warning: root.state.notification_is_warning;
     }
 
     VerticalBox {
@@ -112,20 +124,20 @@ export component AppWindow inherits Window {
             }
 
             version_combo := ComboBox {
-                model: versions;
-                enabled: !busy;
+                model: root.state.versions;
+                enabled: !root.state.busy;
                 horizontal-stretch: 1;
                 selected(val) => {
-                    version_changed(val);
+                    StateBridge.version_changed(val);
                 }
             }
 
             Switch {
                 text: "Show pre-release versions";
-                enabled: !busy;
-                checked <=> show_rcs;
+                enabled: !root.state.busy;
+                checked <=> StateBridge.state.show_rcs;
                 toggled => {
-                    show_rcs_toggled(self.checked);
+                    StateBridge.show_rcs_toggled(self.checked);
                 }
             }
 
@@ -149,7 +161,7 @@ export component AppWindow inherits Window {
 
                 about_touch := TouchArea {
                     clicked => {
-                        root.show_about = true;
+                        StateBridge.state.show_about = true;
                     }
                 }
             }
@@ -167,23 +179,23 @@ export component AppWindow inherits Window {
             }
 
             profile_combo := EditableComboBox {
-                text <=> search_text;
+                text <=> StateBridge.state.search_text;
                 placeholder-text: "Type to search...";
-                current-index <=> current_highlighted_profile_index;
-                enabled: !busy && versions.length > 0 && !profiles_fetch_failed;
+                current-index <=> StateBridge.state.current_highlighted_profile_index;
+                enabled: !root.state.busy && root.state.versions.length > 0 && !root.state.profiles_fetch_failed;
                 horizontal-stretch: 1;
-                model: profiles;
-                is-open: profiles.length > 0 && selected_id == "";
+                model: root.state.profiles;
+                is-open: root.state.profiles.length > 0 && root.state.selected_id == "";
                 item-height: Constants.autocomplete_element_height;
 
                 edited(text) => {
-                    profile_search_edited(text);
+                    StateBridge.profile_search_edited(text);
                 }
                 key_pressed(event) => {
-                    return profile_search_key_pressed(event);
+                    return StateBridge.profile_search_key_pressed(event);
                 }
                 selected(item) => {
-                    profile_selected(item);
+                    StateBridge.profile_selected(item);
                 }
             }
         }
@@ -196,33 +208,33 @@ export component AppWindow inherits Window {
 
             download_button := Button {
                 text: "Download image builder";
-                enabled: !busy && selected_id != "" && !image_exists;
-                primary: selected_id != "" && !image_exists;
+                enabled: !root.state.busy && root.state.selected_id != "" && !root.state.image_exists;
+                primary: root.state.selected_id != "" && !root.state.image_exists;
                 clicked => {
-                    download_requested();
+                    StateBridge.download_requested();
                 }
             }
 
             load_preset_button := Button {
                 text: "Load preset";
-                enabled: !busy && !profiles_fetch_failed;
+                enabled: !root.state.busy && !root.state.profiles_fetch_failed;
                 clicked => {
-                    load_preset_requested();
+                    StateBridge.load_preset_requested();
                 }
             }
 
             save_preset_button := Button {
                 text: "Save preset";
-                enabled: !busy && image_exists && !profiles_fetch_failed;
+                enabled: !root.state.busy && root.state.image_exists && !root.state.profiles_fetch_failed;
                 clicked => {
-                    save_preset_requested(
-                        root.selected_target,
-                        root.selected_id,
-                        root.extra_image_name_text,
-                        root.rootfs_size_value,
-                        root.packages_text,
-                        root.disabled_service_text,
-                        root.overlay_path_text,
+                    StateBridge.save_preset_requested(
+                        root.state.selected_target,
+                        root.state.selected_id,
+                        root.state.extra_image_name_text,
+                        root.state.rootfs_size_value,
+                        root.state.packages_text,
+                        root.state.disabled_service_text,
+                        root.state.overlay_path_text,
                     );
                 }
             }
@@ -246,7 +258,7 @@ export component AppWindow inherits Window {
                     }
 
                     Text {
-                        text: selected_model;
+                        text: root.state.selected_model;
                         font-size: 12px;
                         wrap: word-wrap;
                     }
@@ -261,7 +273,7 @@ export component AppWindow inherits Window {
                     }
 
                     Text {
-                        text: selected_id;
+                        text: root.state.selected_id;
                         font-size: 12px;
                     }
                 }
@@ -275,7 +287,7 @@ export component AppWindow inherits Window {
                     }
 
                     Text {
-                        text: selected_target;
+                        text: root.state.selected_target;
                         font-size: 12px;
                     }
                 }
@@ -315,8 +327,8 @@ export component AppWindow inherits Window {
                         }
 
                         extra_image_name := LineEdit {
-                            text <=> extra_image_name_text;
-                            enabled: !busy && image_exists;
+                            text <=> StateBridge.state.extra_image_name_text;
+                            enabled: !root.state.busy && root.state.image_exists;
                             placeholder_text: "none";
                         }
                     }
@@ -346,12 +358,12 @@ export component AppWindow inherits Window {
                     }
 
                     packages_text := TextEdit {
-                        text <=> root.packages_text;
-                        enabled: !busy && image_exists;
+                        text <=> StateBridge.state.packages_text;
+                        enabled: !root.state.busy && root.state.image_exists;
                         min-height: 60px;
                         placeholder-text: "none";
                         edited(text) => {
-                            packages_edited(text);
+                            StateBridge.packages_edited(text);
                         }
                     }
 
@@ -382,8 +394,8 @@ export component AppWindow inherits Window {
                     }
 
                     removed_packages_text := TextEdit {
-                        text: root.removed_packages_text;
-                        enabled: !busy && image_exists;
+                        text: root.state.removed_packages_text;
+                        enabled: !root.state.busy && root.state.image_exists;
                         min-height: 60px;
                         placeholder-text: "none";
                         read-only: true;
@@ -422,8 +434,8 @@ export component AppWindow inherits Window {
                         }
 
                         rootfs_size := LineEdit {
-                            text <=> rootfs_size_value;
-                            enabled: !busy && image_exists;
+                            text <=> StateBridge.state.rootfs_size_value;
+                            enabled: !root.state.busy && root.state.image_exists;
                             input-type: InputType.number;
                             placeholder_text: "default";
                         }
@@ -454,8 +466,8 @@ export component AppWindow inherits Window {
                     }
 
                     disabled_service_text := TextEdit {
-                        text <=> root.disabled_service_text;
-                        enabled: !busy && image_exists;
+                        text <=> StateBridge.state.disabled_service_text;
+                        enabled: !root.state.busy && root.state.image_exists;
                         min-height: 60px;
                         placeholder-text: "none";
                     }
@@ -488,17 +500,17 @@ export component AppWindow inherits Window {
                         }
 
                         overlay_path_text := LineEdit {
-                            text <=> root.overlay_path_text;
-                            enabled: !busy && image_exists;
+                            text <=> StateBridge.state.overlay_path_text;
+                            enabled: !root.state.busy && root.state.image_exists;
                             placeholder_text: "none";
                             read-only: false;
                         }
 
                         Button {
                             text: "Select folder";
-                            enabled: !busy && image_exists;
+                            enabled: !root.state.busy && root.state.image_exists;
                             clicked => {
-                                select_overlay_folder_requested();
+                                StateBridge.select_overlay_folder_requested();
                             }
                         }
                     }
@@ -531,20 +543,20 @@ export component AppWindow inherits Window {
                         }
 
                         build_path_text := LineEdit {
-                            text <=> root.build_path_text;
-                            enabled: !busy;
+                            text <=> StateBridge.state.build_path_text;
+                            enabled: !root.state.busy;
                             placeholder_text: "none";
                             read-only: false;
                             edited(text) => {
-                                build_path_edited(text);
+                                StateBridge.build_path_edited(text);
                             }
                         }
 
                         Button {
                             text: "Select folder";
-                            enabled: !busy;
+                            enabled: !root.state.busy;
                             clicked => {
-                                select_build_folder_requested();
+                                StateBridge.select_build_folder_requested();
                             }
                         }
                     }
@@ -562,18 +574,18 @@ export component AppWindow inherits Window {
 
             Button {
                 text: "Open build folder";
-                enabled: !busy && image_exists;
+                enabled: !root.state.busy && root.state.image_exists;
                 clicked => {
-                    open_build_folder_requested();
+                    StateBridge.open_build_folder_requested();
                 }
             }
 
             build_button := Button {
                 text: "Build firmware";
                 primary: true;
-                enabled: !busy && image_exists && root.packages_text != "";
+                enabled: !root.state.busy && root.state.image_exists && root.state.packages_text != "";
                 clicked => {
-                    build_requested(root.packages_text);
+                    StateBridge.build_requested(root.state.packages_text);
                 }
             }
         }
@@ -597,17 +609,17 @@ export component AppWindow inherits Window {
                     vertical-alignment: center;
 
                     states [
-                        fetch_failed when profiles_fetch_failed: {
+                        fetch_failed when StateBridge.state.profiles_fetch_failed: {
                             text: "Failed to fetch profiles";
                         }
-                        no_profile when selected_id == "": {
+                        no_profile when StateBridge.state.selected_id == "": {
                             text: "Select profile";
                         }
-                        missing_builder when !image_exists && build_status == "": {
+                        missing_builder when !StateBridge.state.image_exists && StateBridge.state.status_text == "": {
                             text: "Missing image builder";
                         }
-                        custom when build_status != "": {
-                            text: build_status;
+                        custom when StateBridge.state.status_text != "": {
+                            text: StateBridge.state.status_text;
                         }
                     ]
                 }
@@ -616,12 +628,12 @@ export component AppWindow inherits Window {
                     width: 50%;
                     ProgressIndicator {
                         height: 10px;
-                        progress: progress_value;
+                        progress: root.state.progress_value;
                         opacity: 0.0;
-                        indeterminate: progress_value == 0.0 && progress_visible;
+                        indeterminate: root.state.progress_value == 0.0 && root.state.progress_visible;
 
                         states [
-                            visible_state when progress_visible: {
+                            visible_state when root.state.progress_visible: {
                                 opacity: 1.0;
                                 in {
                                     animate opacity { duration: 250ms; }

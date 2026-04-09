@@ -27,6 +27,7 @@ mod config;
 mod containers;
 mod data;
 mod profiles;
+mod state;
 
 use builder::ImageBuilder;
 use cache::MetadataCache;
@@ -37,6 +38,7 @@ use data::{Preset, Profile};
 use profiles::{
     filter_profiles, find_profile_by_display_name, format_profile, get_all_models_string,
 };
+use state::{AppWindowExt, Notification, UIState};
 
 slint::include_modules!();
 
@@ -58,49 +60,15 @@ const BUILD_MILESTONES: &[(&str, f32, &str)] = &[
     ("Calculating checksums", 0.9, "Calculating checksums"),
 ];
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum Notification {
-    Info,
-    Warning,
-    Error,
-}
-
-impl Notification {
-    fn log(self, text: &str) {
-        match self {
-            Self::Error => eprintln!("Error: {text}"),
-            Self::Warning => eprintln!("Warning: {text}"),
-            Self::Info => println!("{text}"),
-        }
-    }
-}
-
 #[derive(Default)]
-struct AppInternalState {
-    config: Config,
-    packages: Vec<String>,
-    profiles: Vec<Profile>,
-    selected_profile_id: String,
-    selected_target: String,
-    selected_version: String,
-    versions: Vec<String>,
+pub struct AppCore {
+    pub config: Config,
+    pub packages: Vec<String>,
+    pub profiles: Vec<Profile>,
+    pub versions: Vec<String>,
 }
 
-type AppState = Arc<RwLock<AppInternalState>>;
-
-trait AppStateExt {
-    fn reset(&self);
-}
-
-impl AppStateExt for AppState {
-    fn reset(&self) {
-        if let Ok(mut s) = self.write() {
-            s.packages.clear();
-            s.selected_profile_id.clear();
-            s.selected_target.clear();
-        }
-    }
-}
+pub type SharedCore = Arc<RwLock<AppCore>>;
 
 type GetImageBuilderFn = Arc<dyn Fn(&str, &str) -> ImageBuilder + Send + Sync>;
 
@@ -117,16 +85,16 @@ async fn main() -> anyhow::Result<()> {
     let ui = AppWindow::new()?;
     let config = Config::load();
 
-    let state = Arc::new(RwLock::new(AppInternalState {
+    let core = Arc::new(RwLock::new(AppCore {
         config: config.clone(),
         ..Default::default()
     }));
 
     let get_image_builder: GetImageBuilderFn = {
-        let state = state.clone();
+        let core = core.clone();
         Arc::new(move |version, target| {
             let containers = Containers::new().unwrap();
-            let build_path = &state.read().unwrap().config.build_path;
+            let build_path = &core.read().unwrap().config.build_path;
             ImageBuilder::new(containers.clone(), IMAGE_NAME, build_path, version, target)
         })
     };
@@ -134,20 +102,22 @@ async fn main() -> anyhow::Result<()> {
     let cache = MetadataCache::new(&config.cache_path);
     let client = OpenWrtClient::new(BASE_URL, cache.clone());
 
-    setup_callbacks(&ui, &state, &client, &cache, &get_image_builder);
+    setup_callbacks(&ui, &core, &client, &cache, &get_image_builder);
 
-    init(&ui, &state, client, async || match Containers::new() {
+    init(&ui, &core, client, async || match Containers::new() {
         Ok(containers) => containers.is_available().await,
         Err(_) => false,
     });
 
-    ui.set_build_path_text(config.build_path.to_string_lossy().to_string().into());
-    ui.set_version(env!("CARGO_PKG_VERSION").into());
-    ui.set_busy(true);
+    ui.update_state(|s| {
+        s.build_path_text = config.build_path.to_string_lossy().as_ref().into();
+        s.version = env!("CARGO_PKG_VERSION").into();
+        s.switch_to(UIState::LoadingVersions);
+    });
+
     ui.run()?;
 
-    state
-        .read()
+    core.read()
         .unwrap()
         .config
         .save()
@@ -158,48 +128,48 @@ async fn main() -> anyhow::Result<()> {
 
 fn setup_callbacks(
     ui: &AppWindow,
-    state: &AppState,
+    core: &SharedCore,
     client: &OpenWrtClient,
     cache: &MetadataCache,
     get_image_builder: &GetImageBuilderFn,
 ) {
     let ui_weak = ui.as_weak();
+    let state_bridge = ui.global::<StateBridge>();
 
-    ui.on_build_path_edited({
-        let state = state.clone();
+    state_bridge.on_build_path_edited({
+        let core = core.clone();
         move |path| {
-            if let Ok(mut s) = state.write() {
-                s.config.build_path = path.as_str().into();
+            if let Ok(mut c) = core.write() {
+                c.config.build_path = path.as_str().into();
             }
         }
     });
 
-    ui.on_build_requested({
+    state_bridge.on_build_requested({
         let ui_weak = ui_weak.clone();
-        let state = state.clone();
+        let core = core.clone();
         let get_image_builder = get_image_builder.clone();
-        move |packages| on_build(&ui_weak, &state, &get_image_builder, &packages)
+        move |_| on_build(&ui_weak, &core, &get_image_builder)
     });
 
-    ui.on_download_requested({
+    state_bridge.on_download_requested({
         let ui_weak = ui_weak.clone();
-        let state = state.clone();
+        let core = core.clone();
         let cache = cache.clone();
         let get_image_builder = get_image_builder.clone();
-        move || on_download(&ui_weak, &state, &cache, &get_image_builder)
+        move || on_download(&ui_weak, &core, &cache, &get_image_builder)
     });
 
-    ui.on_load_preset_requested({
+    state_bridge.on_load_preset_requested({
         let ui_weak = ui_weak.clone();
-        let state = state.clone();
+        let core = core.clone();
         let cache = cache.clone();
         let get_image_builder = get_image_builder.clone();
-        move || on_load_preset(&ui_weak, &state, &cache, &get_image_builder)
+        move || on_load_preset(&ui_weak, &core, &cache, &get_image_builder)
     });
 
-    ui.on_save_preset_requested({
+    state_bridge.on_save_preset_requested({
         let ui_weak = ui_weak.clone();
-        let state = state.clone();
         move |target,
               profile_id,
               extra_image_name,
@@ -209,7 +179,6 @@ fn setup_callbacks(
               overlay_path| {
             on_save_preset(
                 &ui_weak,
-                &state,
                 Preset {
                     release_series: String::new(),
                     target: target.into(),
@@ -224,64 +193,65 @@ fn setup_callbacks(
         }
     });
 
-    ui.on_open_build_folder_requested({
-        let state = state.clone();
-        move || on_open_build_folder(&state)
-    });
-
-    ui.on_select_build_folder_requested({
+    state_bridge.on_open_build_folder_requested({
         let ui_weak = ui_weak.clone();
-        let state = state.clone();
-        move || on_select_build_folder(&ui_weak, &state)
+        let core = core.clone();
+        move || on_open_build_folder(&ui_weak, &core)
     });
 
-    ui.on_select_overlay_folder_requested({
+    state_bridge.on_select_build_folder_requested({
+        let ui_weak = ui_weak.clone();
+        let core = core.clone();
+        move || on_select_build_folder(&ui_weak, &core)
+    });
+
+    state_bridge.on_select_overlay_folder_requested({
         let ui_weak = ui_weak.clone();
         move || on_select_overlay_folder(&ui_weak)
     });
 
-    ui.on_packages_edited({
+    state_bridge.on_packages_edited({
         let ui_weak = ui_weak.clone();
-        let state = state.clone();
+        let core = core.clone();
         // Store the handle to the pending debounce task so we can cancel it if
         // the user types again
         let debounce_task = Arc::new(RwLock::new(None::<JoinHandle<()>>));
-        move |text| on_packages_edited(&ui_weak, &state, &debounce_task, &text)
+        move |text| on_packages_edited(&ui_weak, &core, &debounce_task, &text)
     });
 
-    ui.on_profile_search_edited({
+    state_bridge.on_profile_search_edited({
         let ui_weak = ui_weak.clone();
-        let state = state.clone();
-        move |search| on_profile_search(&ui_weak, &state, &search)
+        let core = core.clone();
+        move |search| on_profile_search(&ui_weak, &core, &search)
     });
 
-    ui.on_profile_search_key_pressed({
+    state_bridge.on_profile_search_key_pressed({
         let ui_weak = ui_weak.clone();
         move |event| on_profile_search_key_pressed(&ui_weak, &event.text)
     });
 
-    ui.on_profile_selected({
+    state_bridge.on_profile_selected({
         let ui_weak = ui_weak.clone();
-        let state = state.clone();
+        let core = core.clone();
         let cache = cache.clone();
         let get_image_builder = get_image_builder.clone();
-        move |name| on_profile_selected(&ui_weak, &state, &cache, &get_image_builder, &name)
+        move |name| on_profile_selected(&ui_weak, &core, &cache, &get_image_builder, &name)
     });
 
-    ui.on_show_rcs_toggled({
+    state_bridge.on_show_rcs_toggled({
         let ui_weak = ui_weak.clone();
-        let state = state.clone();
-        move |show_rcs| on_show_rcs_toggled(&ui_weak, &state, show_rcs)
+        let core = core.clone();
+        move |show_rcs| on_show_rcs_toggled(&ui_weak, &core, show_rcs)
     });
 
-    ui.on_version_changed({
+    state_bridge.on_version_changed({
         let ui_weak = ui_weak.clone();
-        let state = state.clone();
+        let core = core.clone();
         let client = client.clone();
-        move |version| on_version_changed(&ui_weak, &state, &client, &version)
+        move |version| on_version_changed(&ui_weak, &core, &client, &version)
     });
 
-    ui.on_open_github_link(|| {
+    state_bridge.on_open_github_link(|| {
         if let Err(e) = webbrowser::open(ABOUT_URL) {
             eprintln!("Failed to open GitHub link: {e}");
         }
@@ -290,31 +260,31 @@ fn setup_callbacks(
 
 fn on_build(
     ui_weak: &slint::Weak<AppWindow>,
-    state: &AppState,
+    core: &SharedCore,
     get_image_builder: &GetImageBuilderFn,
-    packages: &SharedString,
 ) {
-    let s = state.read().unwrap();
-    let version = s.selected_version.clone();
-    let target = s.selected_target.clone();
-    let profile_id = s.selected_profile_id.clone();
-    let user_pkgs: Vec<String> = packages
+    let Some(ui) = ui_weak.upgrade() else {
+        eprintln!("Error: UI handle lost during build request.");
+        return;
+    };
+    let s = ui.get_state();
+
+    let version = s.selected_version.to_string();
+    let target = s.selected_target.to_string();
+    let profile_id = s.selected_id.to_string();
+    let user_pkgs: Vec<String> = s
+        .packages_text
         .split_whitespace()
         .map(ToString::to_string)
         .collect();
-    let packages = prepare_package_list(&user_pkgs, &s.packages);
-    let packages = packages.join(" ");
-    drop(s); // release lock early
 
-    let (extra_image_name, rootfs_size, disabled_services, overlay_path) = {
-        let ui = ui_weak.upgrade().unwrap();
-        (
-            ui.get_extra_image_name_text(),
-            ui.get_rootfs_size_value(),
-            ui.get_disabled_service_text(),
-            ui.get_overlay_path_text(),
-        )
-    };
+    let original_pkgs = core.read().unwrap().packages.clone();
+    let packages = prepare_package_list(&user_pkgs, &original_pkgs).join(" ");
+
+    let extra_image_name = s.extra_image_name_text.to_string();
+    let rootfs_size = s.rootfs_size_value.to_string();
+    let disabled_services = s.disabled_service_text.to_string();
+    let overlay_path = s.overlay_path_text.to_string();
 
     let extra_image_name: String = extra_image_name
         .chars()
@@ -323,24 +293,24 @@ fn on_build(
 
     if version.is_empty() || target.is_empty() || profile_id.is_empty() {
         eprintln!("Cannot build: Version, Target, or Profile ID is missing.");
-        let _ = ui_weak.upgrade_in_event_loop(|ui| {
-            ui.set_busy(false);
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.switch_state_to(UIState::Idle(None));
         });
         return;
     }
     let ui_weak = ui_weak.clone();
-    let state = state.clone();
+    let core = core.clone();
     let get_image_builder = get_image_builder.clone();
     tokio::spawn(async move {
         println!("Initializing...");
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.set_busy(true);
-            ui.set_build_status(SharedString::from("Initializing"));
-            ui.set_progress_visible(true);
-            ui.set_progress_value(0.0);
+            ui.switch_state_to(UIState::Building {
+                progress: None,
+                status: Some("Initializing".into()),
+            });
         });
 
-        let build_path = { state.read().unwrap().config.build_path.clone() };
+        let build_path = core.read().unwrap().config.build_path.clone();
         let build_folder_path = build_path.join(&target);
 
         let now = Local::now().format("%Y-%m-%d-%H-%M-%S");
@@ -373,12 +343,13 @@ fn on_build(
         let mut stream = match stream {
             Ok(s) => s,
             Err(e) => {
-                show_error(&ui_weak, "Failed to build firmware", Some(e));
-                let _ = ui_weak.upgrade_in_event_loop(|ui| {
-                    ui.set_build_status(SharedString::from("Build failed"));
-                    ui.set_progress_visible(false);
-                    ui.set_progress_value(0.0);
-                    ui.set_busy(false);
+                let msg = "Failed to build firmware";
+                eprintln!("{msg}: {e}");
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.update_state(move |s| {
+                        s.set_notification(Notification::Error, Some(msg));
+                        s.switch_to(UIState::Error("Build failed".into()));
+                    });
                 });
                 return;
             }
@@ -395,7 +366,13 @@ fn on_build(
                     String::from_utf8_lossy(&message).to_string()
                 }
                 Err(e) => {
-                    show_error(&ui_weak, "Error receiving build logs", Some(e.into()));
+                    let msg = format!("Error receiving build logs: {e}");
+                    eprintln!("\n{msg}");
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.update_state(|s| {
+                            s.set_notification(Notification::Error, Some(&msg));
+                        });
+                    });
                     success = false;
                     break;
                 }
@@ -423,10 +400,14 @@ fn on_build(
             if needs_update {
                 let current_status = current_status.clone();
                 let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                    if !current_status.is_empty() {
-                        ui.set_build_status(SharedString::from(current_status));
-                    }
-                    ui.set_progress_value(current_progress);
+                    ui.switch_state_to(UIState::Building {
+                        progress: Some(current_progress),
+                        status: if current_status.is_empty() {
+                            None
+                        } else {
+                            Some(current_status)
+                        },
+                    });
                 });
                 needs_update = false;
             }
@@ -441,17 +422,11 @@ fn on_build(
                 .unwrap();
 
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.set_build_status(SharedString::from("Build completed"));
-                ui.set_progress_value(1.0);
-                ui.set_progress_visible(false);
-                ui.set_busy(false);
+                ui.switch_state_to(UIState::Idle(Some("Build completed".into())));
             });
         } else {
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.set_build_status(SharedString::from("Build failed"));
-                ui.set_progress_visible(false);
-                ui.set_progress_value(0.0);
-                ui.set_busy(false);
+                ui.switch_state_to(UIState::Error("Build failed".into()));
             });
         }
     });
@@ -460,28 +435,39 @@ fn on_build(
 #[allow(clippy::cast_precision_loss)]
 fn on_download(
     ui_weak: &slint::Weak<AppWindow>,
-    state: &AppState,
+    core: &SharedCore,
     cache: &MetadataCache,
     get_image_builder: &GetImageBuilderFn,
 ) {
-    let _ = ui_weak.upgrade_in_event_loop(|ui| {
-        ui.set_busy(true);
-        ui.set_build_status(SharedString::from("Downloading image builder"));
-        ui.set_image_exists(false);
-        ui.set_progress_visible(true);
-        ui.set_progress_value(0.0);
-
-        set_notification(Notification::Info, &ui, None);
-    });
-
     let ui_weak = ui_weak.clone();
-    let state = state.clone();
+    let core = core.clone();
     let cache = cache.clone();
     let get_image_builder = get_image_builder.clone();
-    let (version, target) = {
-        let s = state.read().unwrap();
-        (s.selected_version.clone(), s.selected_target.clone())
+
+    let (version, target, profile_id) = {
+        let Some(ui) = ui_weak.upgrade() else {
+            eprintln!("Error: UI handle lost during download request.");
+            return;
+        };
+        let s = ui.get_state();
+        (
+            s.selected_version.to_string(),
+            s.selected_target.to_string(),
+            s.selected_id.to_string(),
+        )
     };
+
+    let _ = ui_weak.upgrade_in_event_loop(|ui| {
+        ui.update_state(|s| {
+            s.image_exists = false;
+            s.set_notification(Notification::Info, None);
+            s.switch_to(UIState::DownloadingBuilder {
+                status: None,
+                progress: Some(0.0),
+            });
+        });
+    });
+
     tokio::spawn(async move {
         let image_builder = get_image_builder(&version, &target);
         let mut stream = image_builder.download();
@@ -523,15 +509,19 @@ fn on_download(
                     }
 
                     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                        ui.set_build_status(status_text.into());
-                        ui.set_progress_value(current_progress);
+                        ui.switch_state_to(UIState::DownloadingBuilder {
+                            progress: Some(current_progress),
+                            status: Some(status_text),
+                        });
                     });
                 }
                 Err(e) => {
                     let msg = format!("Pull error: {e}");
                     eprintln!("{msg}");
                     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                        set_notification(Notification::Error, &ui, Some(&msg));
+                        ui.update_state(|s| {
+                            s.set_notification(Notification::Error, Some(&msg));
+                        });
                     });
                     break;
                 }
@@ -543,21 +533,19 @@ fn on_download(
 
         let exists = set_image_exists(&ui_weak, &get_image_builder, &version, &target).await;
         if exists {
-            fetch_and_update_packages(&ui_weak, state, cache, &get_image_builder, true).await;
-            ui_weak
-                .upgrade_in_event_loop(move |ui| {
-                    ui.set_build_status(SharedString::new());
-                    ui.set_progress_visible(false);
-                    ui.set_progress_value(0.0);
-                    ui.set_busy(false);
-                })
-                .unwrap();
+            fetch_and_update_packages(
+                &ui_weak,
+                core,
+                cache,
+                &get_image_builder,
+                &version,
+                &target,
+                &profile_id,
+            )
+            .await;
         } else {
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.set_build_status(SharedString::new());
-                ui.set_progress_visible(false);
-                ui.set_progress_value(0.0);
-                ui.set_busy(false);
+                ui.switch_state_to(UIState::Idle(None));
 
                 let ui_weak = ui.as_weak();
                 let _ = ui_weak.upgrade_in_event_loop(move |ui| {
@@ -570,16 +558,22 @@ fn on_download(
 
 fn on_load_preset(
     ui_weak: &slint::Weak<AppWindow>,
-    state: &AppState,
+    core: &SharedCore,
     cache: &MetadataCache,
     get_image_builder: &GetImageBuilderFn,
 ) {
+    let version = {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let s = ui.get_state();
+        s.selected_version.to_string()
+    };
+
     let _ = ui_weak.upgrade_in_event_loop(|ui| {
-        ui.set_busy(true);
+        ui.switch_state_to(UIState::Idle(None));
     });
 
     let ui_weak = ui_weak.clone();
-    let state = state.clone();
+    let core = core.clone();
     let cache = cache.clone();
     let get_image_builder = get_image_builder.clone();
     tokio::spawn(async move {
@@ -590,33 +584,36 @@ fn on_load_preset(
 
         let Some(path) = picker.await else {
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.set_busy(false);
+                ui.switch_state_to(UIState::Idle(None));
             });
             return;
         };
 
         let _ = ui_weak.upgrade_in_event_loop(|ui| {
-            ui.set_build_status(SharedString::from("Loading preset"));
-            ui.set_progress_visible(true);
+            ui.switch_state_to(UIState::LoadingPreset);
         });
 
         let path = PathBuf::from(path);
         if let Err(e) =
-            load_preset_from_path(&ui_weak, &state, &path, cache, &get_image_builder).await
+            load_preset_from_path(&ui_weak, &core, &path, cache, &get_image_builder, &version).await
         {
             eprintln!("Error loading preset: {e}");
             let msg = format!("{e}");
-            show_error(&ui_weak, &msg, None);
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.set_progress_visible(false);
-                ui.set_busy(false);
+                ui.update_state(|s| {
+                    s.set_notification(Notification::Error, Some(&msg));
+                    s.switch_to(UIState::Idle(None));
+                });
             });
         }
     });
 }
 
-fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState, mut preset: Preset) {
-    let version = state.read().unwrap().selected_version.clone();
+fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, mut preset: Preset) {
+    let Some(ui) = ui_weak.upgrade() else {
+        return;
+    };
+    let version = ui.get_state().selected_version.to_string();
     preset.release_series = get_release_series(&version);
 
     let filename = if preset.extra_image_name.is_empty() {
@@ -629,7 +626,7 @@ fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState, mut preset
     };
 
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-        ui.set_busy(true);
+        ui.switch_state_to(UIState::SavingPreset);
     });
 
     let ui_weak = ui_weak.clone();
@@ -642,7 +639,7 @@ fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState, mut preset
 
         let Some(path) = picker.await else {
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.set_busy(false);
+                ui.switch_state_to(UIState::Idle(None));
             });
             return;
         };
@@ -654,27 +651,29 @@ fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, state: &AppState, mut preset
         }
 
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.set_busy(false);
+            ui.switch_state_to(UIState::Idle(None));
         });
     });
 }
 
-fn on_open_build_folder(state: &AppState) {
-    let s = state.read().unwrap();
-    let version = &s.selected_version;
-    let target = &s.selected_target;
+fn on_open_build_folder(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore) {
+    let Some(ui) = ui_weak.upgrade() else {
+        return;
+    };
+    let s = ui.get_state();
+    let version = s.selected_version.to_string();
+    let target = s.selected_target.to_string();
     if version.is_empty() || target.is_empty() {
         eprintln!("Cannot open folder: Version or Target is missing.");
         return;
     }
-    let build_folder_path = s.config.build_path.join(target);
+    let build_folder_path = core.read().unwrap().config.build_path.join(target);
     open_dir(&build_folder_path);
 }
 
 fn on_select_overlay_folder(ui_weak: &slint::Weak<AppWindow>) {
     let _ = ui_weak.upgrade_in_event_loop(|ui| {
-        ui.set_busy(true);
-        ui.set_build_status(SharedString::from("Select overlay folder"));
+        ui.switch_state_to(UIState::SelectOverlayFolder);
     });
 
     let ui_weak = ui_weak.clone();
@@ -685,7 +684,7 @@ fn on_select_overlay_folder(ui_weak: &slint::Weak<AppWindow>) {
 
         let Some(path) = picker.await else {
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.set_busy(false);
+                ui.switch_state_to(UIState::Idle(None));
             });
             return;
         };
@@ -693,21 +692,21 @@ fn on_select_overlay_folder(ui_weak: &slint::Weak<AppWindow>) {
         let path_str = path.path().to_string_lossy().to_string();
         println!("Selected overlay folder: {path_str}");
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.set_overlay_path_text(path_str.into());
-            ui.set_build_status(SharedString::new());
-            ui.set_busy(false);
+            ui.update_state(|s| {
+                s.overlay_path_text = path_str.into();
+                s.switch_to(UIState::Idle(None));
+            });
         });
     });
 }
 
-fn on_select_build_folder(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
+fn on_select_build_folder(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore) {
     let _ = ui_weak.upgrade_in_event_loop(|ui| {
-        ui.set_busy(true);
-        ui.set_build_status(SharedString::from("Select build folder"));
+        ui.switch_state_to(UIState::SelectBuildFolder);
     });
 
     let ui_weak = ui_weak.clone();
-    let state = state.clone();
+    let core = core.clone();
     tokio::spawn(async move {
         let picker = rfd::AsyncFileDialog::new()
             .set_title("Select Build Folder")
@@ -715,36 +714,39 @@ fn on_select_build_folder(ui_weak: &slint::Weak<AppWindow>, state: &AppState) {
 
         let Some(path) = picker.await else {
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.set_busy(false);
+                ui.switch_state_to(UIState::Idle(None));
             });
             return;
         };
 
         let path = path.path().to_path_buf();
         let path_str = path.to_string_lossy().to_string();
-        if let Ok(mut s) = state.write() {
+        if let Ok(mut s) = core.write() {
             s.config.build_path = path;
         }
 
         println!("Selected build folder: {path_str}");
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.set_build_path_text(path_str.into());
-            ui.set_build_status(SharedString::new());
-            ui.set_busy(false);
+            ui.update_state(|s| {
+                s.build_path_text = path_str.into();
+                s.switch_to(UIState::Idle(None));
+            });
         });
     });
 }
 
 fn on_packages_edited(
     ui_weak: &slint::Weak<AppWindow>,
-    state: &AppState,
+    core: &SharedCore,
     debounce_task: &Arc<RwLock<Option<JoinHandle<()>>>>,
     text: &SharedString,
 ) {
     {
         let text = text.clone();
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.set_packages_text(text);
+            ui.update_state(|s| {
+                s.packages_text = text;
+            });
         });
     }
 
@@ -754,13 +756,13 @@ fn on_packages_edited(
     }
 
     let ui_weak = ui_weak.clone();
-    let state = state.clone();
+    let core = core.clone();
     let text = text.clone();
     *handle_lock = Some(tokio::spawn(async move {
         // Wait for 500ms of inactivity
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let original = state.read().unwrap().packages.clone();
+        let original = core.read().unwrap().packages.clone();
         let current_set: HashSet<_> = text.split_whitespace().collect();
 
         // Identify which original packages are no longer in the user's list
@@ -771,7 +773,9 @@ fn on_packages_edited(
 
         let removed_str = removed.join(" ");
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.set_removed_packages_text(removed_str.into());
+            ui.update_state(|s| {
+                s.removed_packages_text = removed_str.into();
+            });
         });
     }));
 }
@@ -783,29 +787,32 @@ fn on_profile_search_key_pressed(
     let Some(ui) = ui_weak.upgrade() else {
         return false;
     };
-    let model = ui.get_profiles();
-    let count = model.row_count();
+    let mut s = ui.get_state();
+    let profiles = s.profiles.clone();
+    let count = profiles.row_count();
     if count == 0 {
         return false;
     }
 
-    let mut current = ui.get_current_highlighted_profile_index();
+    let mut current = s.current_highlighted_profile_index;
     let count: i32 = count.try_into().unwrap();
 
     if *event_text == <Key as Into<SharedString>>::into(Key::DownArrow) {
         current = (current + 1) % count;
-        ui.set_current_highlighted_profile_index(current);
+        s.current_highlighted_profile_index = current;
+        ui.set_state(s);
         true
     } else if *event_text == <Key as Into<SharedString>>::into(Key::UpArrow) {
         current = if current <= 0 { count - 1 } else { current - 1 };
-        ui.set_current_highlighted_profile_index(current);
+        s.current_highlighted_profile_index = current;
+        ui.set_state(s);
         true
     } else if *event_text == <Key as Into<SharedString>>::into(Key::Return) {
         if let Some(val) = (current >= 0 && current < count)
-            .then(|| model.row_data(current.try_into().unwrap()))
+            .then(|| profiles.row_data(current.try_into().unwrap()))
             .flatten()
         {
-            ui.invoke_profile_selected(val);
+            ui.global::<StateBridge>().invoke_profile_selected(val);
             return true;
         }
         false
@@ -814,25 +821,28 @@ fn on_profile_search_key_pressed(
     }
 }
 
-fn on_profile_search(ui_weak: &slint::Weak<AppWindow>, state: &AppState, search: &SharedString) {
+fn on_profile_search(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore, search: &SharedString) {
     let Some(ui) = ui_weak.upgrade() else { return };
-    reset_profile_info(&ui, state);
-    ui.set_current_highlighted_profile_index(-1);
-    let s = state.read().unwrap();
+    let mut s = ui.get_state();
+    s.reset_profile();
+    s.current_highlighted_profile_index = -1;
+
+    let core = core.read().unwrap();
     let filtered = if search.chars().count() >= MIN_SEARCH_CHARS {
-        filter_profiles(&s.profiles, search)
+        filter_profiles(&core.profiles, search)
             .iter()
             .map(SharedString::from)
             .collect::<Vec<_>>()
     } else {
         vec![]
     };
-    ui.set_profiles(Rc::new(VecModel::from(filtered)).into());
+    s.profiles = Rc::new(VecModel::from(filtered)).into();
+    ui.set_state(s);
 }
 
 fn on_profile_selected(
     ui_weak: &slint::Weak<AppWindow>,
-    state: &AppState,
+    core: &SharedCore,
     cache: &MetadataCache,
     get_image_builder: &GetImageBuilderFn,
     name: &SharedString,
@@ -841,39 +851,49 @@ fn on_profile_selected(
         return;
     };
 
-    let (profile, version) = {
-        let s = state.read().unwrap();
-        let p = find_profile_by_display_name(&s.profiles, name);
-        (p, s.selected_version.clone())
+    let profile = {
+        let core = core.read().unwrap();
+        find_profile_by_display_name(&core.profiles, name)
     };
 
     let Some(profile) = profile else {
         return;
     };
 
-    ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
-    ui.set_search_text(name.clone());
-    if let Ok(mut s) = state.write() {
-        s.selected_profile_id.clone_from(&profile.id);
-        s.selected_target.clone_from(&profile.target);
-    }
+    let mut s = ui.get_state();
+    s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
+    s.search_text = name.clone();
+    s.selected_id = profile.id.as_str().into();
+    s.selected_target = profile.target.as_str().into();
+    s.selected_model = get_all_models_string(&profile).as_str().into();
 
-    ui.set_selected_model(get_all_models_string(&profile).as_str().into());
-    ui.set_selected_id(profile.id.as_str().into());
-    ui.set_selected_target(profile.target.as_str().into());
+    s.switch_to(UIState::FetchingPackages);
+
+    let profile_id = profile.id.clone();
+    let target = profile.target.clone();
+    let version = s.selected_version.to_string();
+    ui.set_state(s);
 
     let ui_weak = ui_weak.clone();
-    let state = state.clone();
-    let get_image_builder = get_image_builder.clone();
+    let core = core.clone();
     let cache = cache.clone();
+    let get_image_builder = get_image_builder.clone();
     tokio::spawn(async move {
-        let exists =
-            set_image_exists(&ui_weak, &get_image_builder, &version, &profile.target).await;
+        let exists = set_image_exists(&ui_weak, &get_image_builder, &version, &target).await;
         if exists {
-            fetch_and_update_packages(&ui_weak, state, cache, &get_image_builder, false).await;
+            fetch_and_update_packages(
+                &ui_weak,
+                core,
+                cache,
+                &get_image_builder,
+                &version,
+                &target,
+                &profile_id,
+            )
+            .await;
         } else {
             let _ = ui_weak.upgrade_in_event_loop(|ui| {
-                ui.set_busy(false);
+                ui.switch_state_to(UIState::Idle(None));
 
                 let ui_weak = ui.as_weak();
                 let _ = ui_weak.upgrade_in_event_loop(move |ui| {
@@ -884,133 +904,152 @@ fn on_profile_selected(
     });
 }
 
-fn on_show_rcs_toggled(ui_weak: &slint::Weak<AppWindow>, state: &AppState, show_rcs: bool) {
-    let Ok(s) = state.read() else {
-        return;
-    };
+fn on_show_rcs_toggled(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore, show_rcs: bool) {
+    let core = core.read().unwrap();
     let Some(ui) = ui_weak.upgrade() else { return };
-    let filtered = filter_versions(&s.versions, show_rcs);
-    ui.set_versions(Rc::new(VecModel::from(filtered)).into());
+    let filtered = filter_versions(&core.versions, show_rcs);
 
-    if !show_rcs && s.selected_version.contains("-rc") {
-        drop(s);
-        ui.set_search_text("".into());
-        ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
-        reset_profile_info(&ui, state);
-    }
+    ui.update_state(|s| {
+        s.versions = Rc::new(VecModel::from(filtered)).into();
+
+        if !show_rcs && s.selected_version.contains("-rc") {
+            s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
+            s.search_text = "".into();
+            s.selected_version = SharedString::new();
+            s.reset_profile();
+        }
+    });
 }
 
 fn on_version_changed(
     ui_weak: &slint::Weak<AppWindow>,
-    state: &AppState,
+    core: &SharedCore,
     client: &OpenWrtClient,
     version: &SharedString,
 ) {
     let version = version.to_string();
-    if let Ok(mut s) = state.write() {
-        s.selected_version.clone_from(&version);
-        s.selected_profile_id = String::new();
-    }
 
     let _ = ui_weak.upgrade_in_event_loop({
-        let state = state.clone();
+        let version = version.clone();
         move |ui| {
-            ui.set_busy(true);
-            ui.set_search_text("".into());
-            reset_profile_info(&ui, &state);
+            ui.switch_state_to(UIState::LoadingProfiles(version));
         }
     });
 
     let client = client.clone();
-    let state = state.clone();
+    let core = core.clone();
     let ui_weak = ui_weak.clone();
     tokio::spawn(async move {
-        match client.fetch_profiles(&version).await {
-            Ok(profiles) => {
-                if let Ok(mut s) = state.write() {
-                    s.profiles = profiles;
-                }
-                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
-                    ui.set_busy(false);
+        if let Ok(profiles) = client.fetch_profiles(&version).await {
+            if let Ok(mut c) = core.write() {
+                c.profiles = profiles;
+            }
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.update_state(|s| {
+                    s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
+                    s.switch_to(UIState::Idle(None));
+                });
 
-                    let ui_weak = ui.as_weak();
-                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                        ui.invoke_request_profile_search_focus();
-                    });
-                });
-            }
-            Err(e) => {
-                let msg = format!("Failed to fetch profiles for version {version}");
-                show_error(&ui_weak, &msg, Some(e));
+                let ui_weak = ui.as_weak();
                 let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.set_profiles_fetch_failed(true);
-                    ui.set_busy(false);
-                    ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into()); // Clear profiles even on error
+                    ui.invoke_request_profile_search_focus();
                 });
-            }
+            });
+        } else {
+            let msg = format!("Failed to fetch profiles for version {version}");
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.update_state(|s| {
+                    s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
+                    s.profiles_fetch_failed = true;
+                    s.set_notification(Notification::Error, Some(&msg));
+                    s.switch_to(UIState::Idle(None));
+                });
+            });
         }
     });
 }
 
-fn init<F, Fut>(ui: &AppWindow, state: &AppState, client: OpenWrtClient, is_containers_available: F)
-where
+fn init<F, Fut>(
+    ui: &AppWindow,
+    core: &SharedCore,
+    client: OpenWrtClient,
+    is_containers_available: F,
+) where
     F: Fn() -> Fut + Send + 'static,
     Fut: Future<Output = bool> + Send + 'static,
 {
     let ui_weak = ui.as_weak();
-    let state = state.clone();
-    let show_rcs = ui.get_show_rcs();
+    let core = core.clone();
+    let show_rcs = ui.get_state().show_rcs;
     tokio::spawn(async move {
         if !is_containers_available().await {
-            show_error(
-                &ui_weak,
-                "Podman or Docker not found. Please ensure either of them is running.",
-                None,
-            );
+            let _ = ui_weak.upgrade_in_event_loop(|ui| {
+                ui.update_state(|s| {
+                    s.switch_to(UIState::Idle(Some("No container engines found".into())));
+                    s.set_notification(
+                        Notification::Error,
+                        Some(
+                            "Podman or Docker not found. Please ensure either of them is running.",
+                        ),
+                    );
+                });
+            });
             return;
         }
 
         let versions_res = client.fetch_versions().await;
         if let Err(e) = versions_res {
-            show_error(&ui_weak, "Initial load error", Some(e));
+            let msg = format!("Initial load error: {e}");
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.update_state(|s| {
+                    s.set_notification(Notification::Error, Some(&msg));
+                });
+            });
             return;
         }
 
         let versions = versions_res.unwrap();
-        if let Ok(mut s) = state.write() {
-            s.versions.clone_from(&versions);
+        if let Ok(mut c) = core.write() {
+            c.versions.clone_from(&versions);
         }
 
         let filtered = filter_versions(&versions, show_rcs);
         let Some(first_version) = filtered.first().map(ToString::to_string) else {
-            show_error(&ui_weak, "No OpenWrt versions found.", None);
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.update_state(|s| {
+                    s.set_notification(Notification::Error, Some("No OpenWrt versions found."));
+                });
+            });
             return; // No versions, nothing to load
         };
 
-        if let Ok(mut s) = state.write() {
-            s.selected_version.clone_from(&first_version);
-        }
-
-        let filtered = filtered.clone();
-        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.set_versions(Rc::new(VecModel::from(filtered)).into());
-            ui.set_busy(true); // Still busy loading profiles
+        let _ = ui_weak.upgrade_in_event_loop({
+            let filtered = filtered.clone();
+            let first_version = first_version.clone();
+            move |ui| {
+                ui.update_state(|s| {
+                    s.versions = Rc::new(VecModel::from(filtered)).into();
+                    s.switch_to(UIState::LoadingProfiles(first_version));
+                });
+            }
         });
 
         let profiles_res = client.fetch_profiles(&first_version).await;
         match profiles_res {
             Ok(profiles) => {
-                if let Ok(mut s) = state.write() {
-                    s.profiles = profiles;
+                if let Ok(mut c) = core.write() {
+                    c.profiles = profiles;
                 }
             }
             Err(e) => {
-                let _ = ui_weak.upgrade_in_event_loop(|ui| {
-                    ui.set_profiles_fetch_failed(true);
-                    ui.set_busy(false);
+                let msg = format!("Initial load error: {e}");
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.update_state(|s| {
+                        s.profiles_fetch_failed = true;
+                        s.set_notification(Notification::Error, Some(&msg));
+                        s.switch_to(UIState::Idle(None));
+                    });
                 });
-                show_error(&ui_weak, "Initial load error", Some(e));
                 return;
             }
         }
@@ -1018,8 +1057,10 @@ where
         // Always set busy to false and clear profiles at the end of the initial
         // load task
         let _ = ui_weak.upgrade_in_event_loop(|ui| {
-            ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
-            ui.set_busy(false);
+            ui.update_state(|s| {
+                s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
+                s.switch_to(UIState::Idle(None));
+            });
 
             let ui_weak = ui.as_weak();
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
@@ -1031,32 +1072,19 @@ where
 
 async fn fetch_and_update_packages(
     ui_weak: &slint::Weak<AppWindow>,
-    state: AppState,
+    core: SharedCore,
     cache: MetadataCache,
     get_image_builder: &GetImageBuilderFn,
-    already_busy: bool,
+    version: &str,
+    target: &str,
+    profile_id: &str,
 ) {
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-        if !already_busy {
-            ui.set_busy(true);
-            ui.set_progress_visible(true);
-        }
-
-        ui.set_progress_value(0.0);
-        ui.set_build_status(SharedString::from("Fetching package list"));
+        ui.switch_state_to(UIState::FetchingPackages);
     });
 
-    let (version, target, profile_id) = {
-        let s = state.read().unwrap();
-        (
-            s.selected_version.clone(),
-            s.selected_target.clone(),
-            s.selected_profile_id.clone(),
-        )
-    };
-
     let packages =
-        fetch_packages_for_profile(&cache, get_image_builder, &version, &target, &profile_id).await;
+        fetch_packages_for_profile(&cache, get_image_builder, version, target, profile_id).await;
 
     let packages = match packages {
         Ok(p) => {
@@ -1069,27 +1097,28 @@ async fn fetch_and_update_packages(
             pkgs_vec.sort_unstable();
             pkgs_vec.dedup();
 
-            if let Ok(mut s) = state.write() {
-                s.packages.clone_from(&pkgs_vec);
+            if let Ok(mut c) = core.write() {
+                c.packages.clone_from(&pkgs_vec);
             }
             pkgs_vec.join(" ")
         }
         Err(e) => {
-            show_error(ui_weak, "Error fetching package list for profile", Some(e));
+            let msg = format!("Error fetching package list for profile: {e}");
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.update_state(|s| {
+                    s.set_notification(Notification::Error, Some(&msg));
+                });
+            });
             String::new()
         }
     };
 
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-        ui.set_packages_text(packages.into());
-        ui.set_removed_packages_text(SharedString::new());
-
-        if !already_busy {
-            ui.set_progress_visible(false);
-            ui.set_busy(false);
-        }
-        ui.set_progress_value(0.0);
-        ui.set_build_status(SharedString::new());
+        ui.update_state(|s| {
+            s.packages_text = packages.into();
+            s.removed_packages_text = SharedString::new();
+            s.switch_to(UIState::Idle(None));
+        });
 
         let ui_weak = ui.as_weak();
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
@@ -1154,30 +1183,29 @@ fn get_release_series(version: &str) -> String {
 
 async fn load_preset_from_path(
     ui_weak: &slint::Weak<AppWindow>,
-    state: &AppState,
+    core: &SharedCore,
     path: &Path,
     cache: MetadataCache,
     get_image_builder: &GetImageBuilderFn,
+    version: &str,
 ) -> anyhow::Result<()> {
     let content = tokio::fs::read_to_string(&path).await?;
     let preset: Preset = serde_json::from_str(&content)?;
-    let target_id = &preset.target;
-    let profile_id = &preset.profile_id;
+    let target_id = preset.target.clone();
+    let profile_id = preset.profile_id.clone();
 
-    let (found, version) = {
-        let s = state.read().unwrap();
-        let found = s
-            .profiles
+    let found = {
+        let core = core.read().unwrap();
+        core.profiles
             .iter()
-            .find(|p| &p.id == profile_id && &p.target == target_id)
+            .find(|p| p.id == profile_id && p.target == target_id)
             .map(|p| {
                 let name = format_profile(p)
                     .first()
                     .cloned()
                     .unwrap_or_else(|| p.id.clone());
                 (name, get_all_models_string(p), p.target.clone())
-            });
-        (found, s.selected_version.clone())
+            })
     };
 
     let (name, model, target) = found.ok_or_else(|| {
@@ -1187,35 +1215,38 @@ async fn load_preset_from_path(
     })?;
 
     ui_weak.upgrade_in_event_loop({
-        let target = target.clone();
-        let profile_id = preset.profile_id.clone();
+        let profile_id = profile_id.clone();
         let overlay_path = preset.overlay_path.clone();
+        let name = name.clone();
+        let model = model.clone();
+        let target = target.clone();
         move |ui| {
-            ui.set_search_text(name.into());
-            ui.set_selected_id(profile_id.clone().into());
-            ui.set_selected_model(model.into());
-            ui.set_selected_target(target.clone().into());
-            ui.set_overlay_path_text(overlay_path.into());
-            ui.set_packages_text(SharedString::new());
-            ui.set_removed_packages_text(SharedString::new());
+            ui.update_state(|s| {
+                s.overlay_path_text = overlay_path.into();
+                s.packages_text = SharedString::new();
+                s.removed_packages_text = SharedString::new();
+                s.search_text = name.into();
+                s.selected_id = profile_id.into();
+                s.selected_model = model.into();
+                s.selected_target = target.into();
+            });
         }
     })?;
 
-    let current_series = get_release_series(&version);
+    let current_series = get_release_series(version);
     let preset_series = preset.release_series.clone();
 
-    let exists = set_image_exists(ui_weak, get_image_builder, &version, &target).await;
+    let exists = set_image_exists(ui_weak, get_image_builder, version, &target).await;
     if !exists {
         let _ = ui_weak.upgrade_in_event_loop(|ui| {
-            ui.set_progress_visible(false);
-            ui.set_busy(false);
+            ui.switch_state_to(UIState::Idle(None));
         });
         return Ok(());
     }
 
     // Load original packages for comparison
     let fetched_pkgs =
-        fetch_packages_for_profile(&cache, get_image_builder, &version, &target, profile_id)
+        fetch_packages_for_profile(&cache, get_image_builder, version, &target, &profile_id)
             .await
             .unwrap_or_else(|e| {
                 eprintln!("Error fetching packages for preset: {e}");
@@ -1244,32 +1275,29 @@ async fn load_preset_from_path(
         .collect();
     let removed_str = removed.join(" ");
 
-    let target = target.clone();
-    let profile_id: String = preset.profile_id.clone();
     let original_pkgs = original_pkgs.clone();
-    let state = state.clone();
+    let core = core.clone();
 
     ui_weak.upgrade_in_event_loop(move |ui| {
-        ui.set_build_status(SharedString::new());
-        ui.set_disabled_service_text(preset.disabled_services.into());
-        ui.set_extra_image_name_text(preset.extra_image_name.into());
-        ui.set_overlay_path_text(preset.overlay_path.into());
-        ui.set_packages_text(preset.packages.into());
-        ui.set_profiles(Rc::new(VecModel::<SharedString>::default()).into());
-        ui.set_progress_visible(false);
-        ui.set_rootfs_size_value(preset.rootfs_size.into());
-        ui.set_removed_packages_text(removed_str.into());
-        ui.set_busy(false);
+        let mut s = ui.get_state();
+        s.disabled_service_text = preset.disabled_services.into();
+        s.extra_image_name_text = preset.extra_image_name.into();
+        s.overlay_path_text = preset.overlay_path.into();
+        s.packages_text = preset.packages.into();
+        s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
+        s.removed_packages_text = removed_str.into();
+        s.rootfs_size_value = preset.rootfs_size.into();
+        s.switch_to(UIState::Idle(None));
 
         if !preset_series.is_empty() && preset_series != current_series {
             let info_msg = format!("Package list from preset series {preset_series} might be incompatible with {current_series}.");
-            set_notification(Notification::Warning, &ui, Some(&info_msg));
+            s.set_notification(Notification::Warning, Some(&info_msg));
         }
 
-        if let Ok(mut s) = state.write() {
-            s.selected_target = target;
-            s.selected_profile_id = profile_id;
-            s.packages = original_pkgs;
+        ui.set_state(s);
+
+        if let Ok(mut c) = core.write() {
+            c.packages = original_pkgs;
         }
 
         let ui_weak = ui.as_weak();
@@ -1335,28 +1363,6 @@ fn prepare_package_list(user_pkgs: &[String], original_pkgs: &[String]) -> Vec<S
     user_pkgs
 }
 
-/// Resets the profile details section to empty/default values
-fn reset_profile_info(ui: &AppWindow, state: &AppState) {
-    ui.set_build_status(SharedString::new());
-    ui.set_disabled_service_text(SharedString::new());
-    ui.set_extra_image_name_text(SharedString::new());
-    ui.set_image_exists(false);
-    ui.set_overlay_path_text(SharedString::new());
-    ui.set_packages_text(SharedString::new());
-    ui.set_profiles_fetch_failed(false);
-    ui.set_progress_value(0.0);
-    ui.set_progress_visible(false);
-    ui.set_removed_packages_text(SharedString::new());
-    ui.set_rootfs_size_value(SharedString::new());
-    ui.set_selected_id(SharedString::new());
-    ui.set_selected_model(SharedString::new());
-    ui.set_selected_target(SharedString::new());
-
-    state.reset();
-
-    set_notification(Notification::Info, ui, None);
-}
-
 async fn set_image_exists(
     ui_weak: &slint::Weak<AppWindow>,
     get_image_builder: &GetImageBuilderFn,
@@ -1369,45 +1375,18 @@ async fn set_image_exists(
     let exists = image_builder.exists().await;
 
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-        ui.set_image_exists(exists);
-        set_notification(
-            Notification::Info,
-            &ui,
-            if exists {
-                None
-            } else {
-                Some("Image builder not found locally. Please download it first.")
-            },
-        );
+        ui.update_state(|s| {
+            s.image_exists = exists;
+            s.set_notification(
+                Notification::Info,
+                if exists {
+                    None
+                } else {
+                    Some("Image builder not found locally. Please download it first.")
+                },
+            );
+        });
     });
 
     exists
-}
-
-fn set_notification(t: Notification, ui: &AppWindow, text: Option<&str>) {
-    let (is_err, is_warn, msg) = if let Some(msg) = text {
-        t.log(msg);
-        (
-            t == Notification::Error,
-            t == Notification::Warning,
-            msg.into(),
-        )
-    } else {
-        (false, false, SharedString::default())
-    };
-
-    ui.set_notification_is_error(is_err);
-    ui.set_notification_is_warning(is_warn);
-    ui.set_notification(msg);
-}
-
-fn show_error(ui_weak: &slint::Weak<AppWindow>, msg: &str, e: Option<anyhow::Error>) {
-    if let Some(e) = e {
-        eprintln!("Error: {e}");
-    }
-
-    let msg = msg.to_string();
-    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-        set_notification(Notification::Error, &ui, Some(&msg));
-    });
 }
