@@ -202,12 +202,35 @@ fn setup_callbacks(
     state_bridge.on_select_build_folder_requested({
         let ui_weak = ui_weak.clone();
         let core = core.clone();
-        move || on_select_build_folder(&ui_weak, &core)
+        move || {
+            let core = core.clone();
+            tokio::spawn(select_folder(
+                ui_weak.clone(),
+                "Select Build Folder",
+                UIState::SelectBuildFolder,
+                move |s, path| {
+                    if let Ok(mut core) = core.write() {
+                        core.config.build_path = path.to_path_buf();
+                    }
+
+                    s.build_path_text = path.to_string_lossy().as_ref().into();
+                },
+            ));
+        }
     });
 
     state_bridge.on_select_overlay_folder_requested({
         let ui_weak = ui_weak.clone();
-        move || on_select_overlay_folder(&ui_weak)
+        move || {
+            tokio::spawn(select_folder(
+                ui_weak.clone(),
+                "Select Overlay Folder",
+                UIState::SelectOverlayFolder,
+                move |s, path| {
+                    s.overlay_path_text = path.to_string_lossy().as_ref().into();
+                },
+            ));
+        }
     });
 
     state_bridge.on_packages_edited({
@@ -669,70 +692,6 @@ fn on_open_build_folder(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore) {
     }
     let build_folder_path = core.read().unwrap().config.build_path.join(target);
     open_dir(&build_folder_path);
-}
-
-fn on_select_overlay_folder(ui_weak: &slint::Weak<AppWindow>) {
-    let _ = ui_weak.upgrade_in_event_loop(|ui| {
-        ui.switch_state_to(UIState::SelectOverlayFolder);
-    });
-
-    let ui_weak = ui_weak.clone();
-    tokio::spawn(async move {
-        let picker = rfd::AsyncFileDialog::new()
-            .set_title("Select Overlay Folder")
-            .pick_folder();
-
-        let Some(path) = picker.await else {
-            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.switch_state_to(UIState::Idle(None));
-            });
-            return;
-        };
-
-        let path_str = path.path().to_string_lossy().to_string();
-        println!("Selected overlay folder: {path_str}");
-        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.update_state(|s| {
-                s.overlay_path_text = path_str.into();
-                s.switch_to(UIState::Idle(None));
-            });
-        });
-    });
-}
-
-fn on_select_build_folder(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore) {
-    let _ = ui_weak.upgrade_in_event_loop(|ui| {
-        ui.switch_state_to(UIState::SelectBuildFolder);
-    });
-
-    let ui_weak = ui_weak.clone();
-    let core = core.clone();
-    tokio::spawn(async move {
-        let picker = rfd::AsyncFileDialog::new()
-            .set_title("Select Build Folder")
-            .pick_folder();
-
-        let Some(path) = picker.await else {
-            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.switch_state_to(UIState::Idle(None));
-            });
-            return;
-        };
-
-        let path = path.path().to_path_buf();
-        let path_str = path.to_string_lossy().to_string();
-        if let Ok(mut s) = core.write() {
-            s.config.build_path = path;
-        }
-
-        println!("Selected build folder: {path_str}");
-        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.update_state(|s| {
-                s.build_path_text = path_str.into();
-                s.switch_to(UIState::Idle(None));
-            });
-        });
-    });
 }
 
 fn on_packages_edited(
@@ -1389,4 +1348,37 @@ async fn set_image_exists(
     });
 
     exists
+}
+
+async fn select_folder<F>(
+    ui_weak: slint::Weak<AppWindow>,
+    dialog_title: &str,
+    initial_state: UIState,
+    update_state: F,
+) where
+    F: FnOnce(&mut AppState, &Path) + Send + 'static,
+{
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        ui.switch_state_to(initial_state);
+    });
+
+    let picker = rfd::AsyncFileDialog::new()
+        .set_title(dialog_title)
+        .pick_folder();
+
+    let Some(path_handle) = picker.await else {
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.switch_state_to(UIState::Idle(None));
+        });
+        return;
+    };
+
+    let path = path_handle.path().to_path_buf();
+    println!("Selected folder: {}", path.display());
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        ui.update_state(|s| {
+            update_state(s, &path);
+            s.switch_to(UIState::Idle(None));
+        });
+    });
 }
