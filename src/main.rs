@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use slint::platform::Key;
 use slint::{Model, SharedString, VecModel};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -295,14 +296,25 @@ fn on_build(
     let version = s.selected_version.to_string();
     let target = s.selected_target.to_string();
     let profile_id = s.selected_id.to_string();
-    let user_pkgs: Vec<String> = s
-        .packages_text
-        .split_whitespace()
-        .map(ToString::to_string)
-        .collect();
 
-    let original_pkgs = core.read().unwrap().packages.clone();
-    let packages = prepare_package_list(&user_pkgs, &original_pkgs).join(" ");
+    let packages = {
+        let current_set: HashSet<_> = s.packages_text.split_whitespace().collect();
+        let core = core.read().unwrap();
+        let selected = s.packages_text.to_string();
+        let removed = core
+            .packages
+            .iter()
+            .filter(|p| !current_set.contains(p.as_str()))
+            .enumerate()
+            .fold(String::new(), |mut acc, (i, p)| {
+                if i > 0 {
+                    acc.push(' ');
+                }
+                write!(acc, "-{p}").unwrap();
+                acc
+            });
+        format!("{selected} {removed}")
+    };
 
     let extra_image_name = s.extra_image_name_text.to_string();
     let rootfs_size = s.rootfs_size_value.to_string();
@@ -721,16 +733,20 @@ fn on_packages_edited(
         // Wait for 500ms of inactivity
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let original = core.read().unwrap().packages.clone();
         let current_set: HashSet<_> = text.split_whitespace().collect();
-
-        // Identify which original packages are no longer in the user's list
-        let removed: Vec<String> = original
-            .into_iter()
+        let core = core.read().unwrap();
+        let removed_str = core
+            .packages
+            .iter()
             .filter(|p| !current_set.contains(p.as_str()))
-            .collect();
-
-        let removed_str = removed.join(" ");
+            .enumerate()
+            .fold(String::new(), |mut acc, (i, p)| {
+                if i > 0 {
+                    acc.push(' ');
+                }
+                write!(acc, "{p}").unwrap();
+                acc
+            });
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             ui.update_state(|s| {
                 s.removed_packages_text = removed_str.into();
@@ -1304,22 +1320,6 @@ fn open_dir(path: &Path) {
     {
         eprintln!("Opening file explorer is not supported on this OS.");
     }
-}
-
-/// Compares current package list with the original profile defaults.
-/// Any default package missing from the user list is prefixed with `-` to
-/// ensure removal.
-fn prepare_package_list(user_pkgs: &[String], original_pkgs: &[String]) -> Vec<String> {
-    let user_set: HashSet<&str> = user_pkgs.iter().map(AsRef::as_ref).collect();
-    let mut user_pkgs = user_pkgs.to_vec();
-
-    for pkg in original_pkgs {
-        if !user_set.contains(pkg.as_str()) {
-            user_pkgs.push(format!("-{pkg}"));
-        }
-    }
-
-    user_pkgs
 }
 
 async fn set_image_exists(
