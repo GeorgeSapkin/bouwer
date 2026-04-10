@@ -24,6 +24,8 @@ use tokio::task::JoinHandle;
 mod builder;
 mod cache;
 mod client;
+#[macro_use]
+mod clone;
 mod config;
 mod containers;
 mod data;
@@ -92,12 +94,11 @@ async fn main() -> anyhow::Result<()> {
     }));
 
     let get_image_builder: GetImageBuilderFn = {
-        let core = core.clone();
-        Arc::new(move |version, target| {
+        Arc::new(clone!((core), move |version, target| {
             let containers = Containers::new().unwrap();
             let build_path = &core.read().unwrap().config.build_path;
             ImageBuilder::new(containers.clone(), IMAGE_NAME, build_path, version, target)
-        })
+        }))
     };
 
     let cache = MetadataCache::new(&config.cache_path);
@@ -137,40 +138,32 @@ fn setup_callbacks(
     let ui_weak = ui.as_weak();
     let state_bridge = ui.global::<StateBridge>();
 
-    state_bridge.on_build_path_edited({
-        let core = core.clone();
-        move |path| {
-            if let Ok(mut c) = core.write() {
-                c.config.build_path = path.as_str().into();
-            }
+    state_bridge.on_build_path_edited(clone!((core), move |path| {
+        if let Ok(mut c) = core.write() {
+            c.config.build_path = path.as_str().into();
         }
-    });
+    }));
 
-    state_bridge.on_build_requested({
-        let ui_weak = ui_weak.clone();
-        let core = core.clone();
-        let get_image_builder = get_image_builder.clone();
-        move |_| on_build(&ui_weak, &core, &get_image_builder)
-    });
+    state_bridge.on_build_requested(clone!((ui_weak, core, get_image_builder), move |_| {
+        on_build(&ui_weak, &core, &get_image_builder);
+    }));
 
-    state_bridge.on_download_requested({
-        let ui_weak = ui_weak.clone();
-        let core = core.clone();
-        let cache = cache.clone();
-        let get_image_builder = get_image_builder.clone();
-        move || on_download(&ui_weak, &core, &cache, &get_image_builder)
-    });
+    state_bridge.on_download_requested(clone!(
+        (ui_weak, core, cache, get_image_builder),
+        move || {
+            on_download(&ui_weak, &core, &cache, &get_image_builder);
+        }
+    ));
 
-    state_bridge.on_load_preset_requested({
-        let ui_weak = ui_weak.clone();
-        let core = core.clone();
-        let cache = cache.clone();
-        let get_image_builder = get_image_builder.clone();
-        move || on_load_preset(&ui_weak, &core, &cache, &get_image_builder)
-    });
+    state_bridge.on_load_preset_requested(clone!(
+        (ui_weak, core, cache, get_image_builder),
+        move || {
+            on_load_preset(&ui_weak, &core, &cache, &get_image_builder);
+        }
+    ));
 
-    state_bridge.on_save_preset_requested({
-        let ui_weak = ui_weak.clone();
+    state_bridge.on_save_preset_requested(clone!(
+        (ui_weak),
         move |target,
               profile_id,
               extra_image_name,
@@ -192,88 +185,69 @@ fn setup_callbacks(
                 },
             );
         }
-    });
+    ));
 
-    state_bridge.on_open_build_folder_requested({
-        let ui_weak = ui_weak.clone();
-        let core = core.clone();
-        move || on_open_build_folder(&ui_weak, &core)
-    });
+    state_bridge.on_open_build_folder_requested(clone!((ui_weak, core), move || {
+        on_open_build_folder(&ui_weak, &core);
+    }));
 
-    state_bridge.on_select_build_folder_requested({
-        let ui_weak = ui_weak.clone();
-        let core = core.clone();
-        move || {
-            let core = core.clone();
-            tokio::spawn(select_folder(
-                ui_weak.clone(),
-                "Select Build Folder",
-                UIState::SelectBuildFolder,
-                move |s, path| {
-                    if let Ok(mut core) = core.write() {
-                        core.config.build_path = path.to_path_buf();
-                    }
+    state_bridge.on_select_build_folder_requested(clone!((ui_weak, core), move || {
+        tokio::spawn(select_folder(
+            ui_weak.clone(),
+            "Select Build Folder",
+            UIState::SelectBuildFolder,
+            clone!((core), move |s, path| {
+                if let Ok(mut core) = core.write() {
+                    core.config.build_path = path.to_path_buf();
+                }
 
-                    s.build_path_text = path.to_string_lossy().as_ref().into();
-                },
-            ));
-        }
-    });
+                s.build_path_text = path.to_string_lossy().as_ref().into();
+            }),
+        ));
+    }));
 
-    state_bridge.on_select_overlay_folder_requested({
-        let ui_weak = ui_weak.clone();
-        move || {
-            tokio::spawn(select_folder(
-                ui_weak.clone(),
-                "Select Overlay Folder",
-                UIState::SelectOverlayFolder,
-                move |s, path| {
-                    s.overlay_path_text = path.to_string_lossy().as_ref().into();
-                },
-            ));
-        }
-    });
+    state_bridge.on_select_overlay_folder_requested(clone!((ui_weak), move || {
+        tokio::spawn(select_folder(
+            ui_weak.clone(),
+            "Select Overlay Folder",
+            UIState::SelectOverlayFolder,
+            move |s, path| {
+                s.overlay_path_text = path.to_string_lossy().as_ref().into();
+            },
+        ));
+    }));
 
     state_bridge.on_packages_edited({
-        let ui_weak = ui_weak.clone();
-        let core = core.clone();
         // Store the handle to the pending debounce task so we can cancel it if
         // the user types again
         let debounce_task = Arc::new(RwLock::new(None::<JoinHandle<()>>));
-        move |text| on_packages_edited(&ui_weak, &core, &debounce_task, &text)
+        clone!((ui_weak, core, debounce_task), move |text| {
+            on_packages_edited(&ui_weak, &core, &debounce_task, &text);
+        })
     });
 
-    state_bridge.on_profile_search_edited({
-        let ui_weak = ui_weak.clone();
-        let core = core.clone();
-        move |search| on_profile_search(&ui_weak, &core, &search)
-    });
+    state_bridge.on_profile_search_edited(clone!((ui_weak, core), move |search| {
+        on_profile_search(&ui_weak, &core, &search);
+    }));
 
-    state_bridge.on_profile_search_key_pressed({
-        let ui_weak = ui_weak.clone();
-        move |event| on_profile_search_key_pressed(&ui_weak, &event.text)
-    });
+    state_bridge.on_profile_search_key_pressed(clone!((ui_weak), move |event| {
+        on_profile_search_key_pressed(&ui_weak, &event.text)
+    }));
 
-    state_bridge.on_profile_selected({
-        let ui_weak = ui_weak.clone();
-        let core = core.clone();
-        let cache = cache.clone();
-        let get_image_builder = get_image_builder.clone();
-        move |name| on_profile_selected(&ui_weak, &core, &cache, &get_image_builder, &name)
-    });
+    state_bridge.on_profile_selected(clone!(
+        (ui_weak, core, cache, get_image_builder),
+        move |name| {
+            on_profile_selected(&ui_weak, &core, &cache, &get_image_builder, &name);
+        }
+    ));
 
-    state_bridge.on_show_rcs_toggled({
-        let ui_weak = ui_weak.clone();
-        let core = core.clone();
-        move |show_rcs| on_show_rcs_toggled(&ui_weak, &core, show_rcs)
-    });
+    state_bridge.on_show_rcs_toggled(clone!((ui_weak, core), move |show_rcs| {
+        on_show_rcs_toggled(&ui_weak, &core, show_rcs);
+    }));
 
-    state_bridge.on_version_changed({
-        let ui_weak = ui_weak.clone();
-        let core = core.clone();
-        let client = client.clone();
-        move |version| on_version_changed(&ui_weak, &core, &client, &version)
-    });
+    state_bridge.on_version_changed(clone!((ui_weak, core, client), move |version| {
+        on_version_changed(&ui_weak, &core, &client, &version);
+    }));
 
     state_bridge.on_open_github_link(|| {
         if let Err(e) = webbrowser::open(ABOUT_URL) {
@@ -333,10 +307,7 @@ fn on_build(
         });
         return;
     }
-    let ui_weak = ui_weak.clone();
-    let core = core.clone();
-    let get_image_builder = get_image_builder.clone();
-    tokio::spawn(async move {
+    tokio::spawn(clone!((ui_weak, core, get_image_builder), async move {
         println!("Initializing...");
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             ui.switch_state_to(UIState::Building {
@@ -433,8 +404,7 @@ fn on_build(
             }
 
             if needs_update {
-                let current_status = current_status.clone();
-                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                let _ = ui_weak.upgrade_in_event_loop(clone!((current_status), move |ui| {
                     ui.switch_state_to(UIState::Building {
                         progress: Some(current_progress),
                         status: if current_status.is_empty() {
@@ -443,7 +413,7 @@ fn on_build(
                             Some(current_status)
                         },
                     });
-                });
+                }));
                 needs_update = false;
             }
         }
@@ -464,7 +434,7 @@ fn on_build(
                 ui.switch_state_to(UIState::Error("Build failed".into()));
             });
         }
-    });
+    }));
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -474,11 +444,6 @@ fn on_download(
     cache: &MetadataCache,
     get_image_builder: &GetImageBuilderFn,
 ) {
-    let ui_weak = ui_weak.clone();
-    let core = core.clone();
-    let cache = cache.clone();
-    let get_image_builder = get_image_builder.clone();
-
     let (version, target, profile_id) = {
         let Some(ui) = ui_weak.upgrade() else {
             eprintln!("Error: UI handle lost during download request.");
@@ -503,92 +468,92 @@ fn on_download(
         });
     });
 
-    tokio::spawn(async move {
-        let image_builder = get_image_builder(&version, &target);
-        let mut stream = image_builder.download();
-        let mut current_progress = 0.0f32;
-        let mut layers = HashMap::<String, (i64, i64)>::new();
+    tokio::spawn(clone!(
+        (ui_weak, core, cache, get_image_builder),
+        async move {
+            let image_builder = get_image_builder(&version, &target);
+            let mut stream = image_builder.download();
+            let mut current_progress = 0.0f32;
+            let mut layers = HashMap::<String, (i64, i64)>::new();
 
-        while let Some(pull_result) = stream.next().await {
-            match pull_result {
-                Ok(info) => {
-                    if let (Some(id), Some(pd)) = (info.id.as_ref(), info.progress_detail.as_ref())
-                        && let (Some(current), Some(total)) = (pd.current, pd.total)
-                        && total > 0
-                    {
-                        layers.insert(id.clone(), (current, total));
-                    }
+            while let Some(pull_result) = stream.next().await {
+                match pull_result {
+                    Ok(info) => {
+                        if let (Some(id), Some(pd)) = (info.id, info.progress_detail.as_ref())
+                            && let (Some(current), Some(total)) = (pd.current, pd.total)
+                            && total > 0
+                        {
+                            layers.insert(id, (current, total));
+                        }
 
-                    let total_current: i64 = layers.values().map(|&(c, _)| c).sum();
-                    let total_sum: i64 = layers.values().map(|&(_, t)| t).sum();
+                        let total_current: i64 = layers.values().map(|&(c, _)| c).sum();
+                        let total_sum: i64 = layers.values().map(|&(_, t)| t).sum();
 
-                    if total_sum > 0 {
-                        current_progress =
-                            current_progress.max(total_current as f32 / total_sum as f32);
-                    } else if info.progress_detail.is_none() {
-                        current_progress = (current_progress + 0.001).min(0.99);
-                    }
+                        if total_sum > 0 {
+                            current_progress =
+                                current_progress.max(total_current as f32 / total_sum as f32);
+                        } else if info.progress_detail.is_none() {
+                            current_progress = (current_progress + 0.001).min(0.99);
+                        }
 
-                    let status_text: String = if total_sum > 0 {
-                        let current_mib = total_current as f32 / SIZE_MIB;
-                        let total_mib = total_sum as f32 / SIZE_MIB;
-                        format!("Downloading image builder: {current_mib:.2} / {total_mib:.2} MiB")
-                    } else {
-                        "Downloading image builder".to_string()
-                    };
+                        let status_text: String = if total_sum > 0 {
+                            let current_mib = total_current as f32 / SIZE_MIB;
+                            let total_mib = total_sum as f32 / SIZE_MIB;
+                            format!(
+                                "Downloading image builder: {current_mib:.2} / {total_mib:.2} MiB"
+                            )
+                        } else {
+                            "Downloading image builder".to_string()
+                        };
 
-                    if !status_text.is_empty() {
-                        use std::io::{self, Write};
-                        print!("\r\x1b[K{status_text}");
-                        let _ = io::stdout().flush();
-                    }
+                        if !status_text.is_empty() {
+                            use std::io::{self, Write};
+                            print!("\r\x1b[K{status_text}");
+                            let _ = io::stdout().flush();
+                        }
 
-                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                        ui.switch_state_to(UIState::DownloadingBuilder {
-                            progress: Some(current_progress),
-                            status: Some(status_text),
+                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                            ui.switch_state_to(UIState::DownloadingBuilder {
+                                progress: Some(current_progress),
+                                status: Some(status_text),
+                            });
                         });
-                    });
-                }
-                Err(e) => {
-                    let msg = format!("Pull error: {e}");
-                    eprintln!("{msg}");
-                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                        ui.update_state(|s| {
-                            s.set_notification(Notification::Error, Some(&msg));
+                    }
+                    Err(e) => {
+                        let msg = format!("Pull error: {e}");
+                        eprintln!("{msg}");
+                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                            ui.update_state(|s| {
+                                s.set_notification(Notification::Error, Some(&msg));
+                            });
                         });
-                    });
-                    break;
+                        break;
+                    }
                 }
             }
-        }
 
-        println!();
-        drop(stream);
+            println!();
+            drop(stream);
 
-        let exists = set_image_exists(&ui_weak, &get_image_builder, &version, &target).await;
-        if exists {
-            fetch_and_update_packages(
-                &ui_weak,
-                core,
-                cache,
-                &get_image_builder,
-                &version,
-                &target,
-                &profile_id,
-            )
-            .await;
-        } else {
-            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.switch_state_to(UIState::Idle(None));
-
-                let ui_weak = ui.as_weak();
+            let exists = set_image_exists(&ui_weak, &get_image_builder, &version, &target).await;
+            if exists {
+                fetch_and_update_packages(
+                    &ui_weak,
+                    core,
+                    cache,
+                    &get_image_builder,
+                    &version,
+                    &target,
+                    &profile_id,
+                )
+                .await;
+            } else {
                 let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.invoke_request_profile_search_focus();
+                    ui.switch_state_to(UIState::Idle(None));
                 });
-            });
+            }
         }
-    });
+    ));
 }
 
 fn on_load_preset(
@@ -607,41 +572,41 @@ fn on_load_preset(
         ui.switch_state_to(UIState::Idle(None));
     });
 
-    let ui_weak = ui_weak.clone();
-    let core = core.clone();
-    let cache = cache.clone();
-    let get_image_builder = get_image_builder.clone();
-    tokio::spawn(async move {
-        let picker = rfd::AsyncFileDialog::new()
-            .add_filter("JSON files", &["json"])
-            .set_title("Load Preset")
-            .pick_file();
+    tokio::spawn(clone!(
+        (ui_weak, core, cache, get_image_builder),
+        async move {
+            let picker = rfd::AsyncFileDialog::new()
+                .add_filter("JSON files", &["json"])
+                .set_title("Load Preset")
+                .pick_file();
 
-        let Some(path) = picker.await else {
-            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.switch_state_to(UIState::Idle(None));
-            });
-            return;
-        };
-
-        let _ = ui_weak.upgrade_in_event_loop(|ui| {
-            ui.switch_state_to(UIState::LoadingPreset);
-        });
-
-        let path = PathBuf::from(path);
-        if let Err(e) =
-            load_preset_from_path(&ui_weak, &core, &path, cache, &get_image_builder, &version).await
-        {
-            eprintln!("Error loading preset: {e}");
-            let msg = format!("{e}");
-            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.update_state(|s| {
-                    s.set_notification(Notification::Error, Some(&msg));
-                    s.switch_to(UIState::Idle(None));
+            let Some(path) = picker.await else {
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.switch_state_to(UIState::Idle(None));
                 });
+                return;
+            };
+
+            let _ = ui_weak.upgrade_in_event_loop(|ui| {
+                ui.switch_state_to(UIState::LoadingPreset);
             });
+
+            let path = PathBuf::from(path);
+            if let Err(e) =
+                load_preset_from_path(&ui_weak, &core, &path, cache, &get_image_builder, &version)
+                    .await
+            {
+                eprintln!("Error loading preset: {e}");
+                let msg = format!("{e}");
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.update_state(|s| {
+                        s.set_notification(Notification::Error, Some(&msg));
+                        s.switch_to(UIState::Idle(None));
+                    });
+                });
+            }
         }
-    });
+    ));
 }
 
 fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, mut preset: Preset) {
@@ -664,8 +629,7 @@ fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, mut preset: Preset) {
         ui.switch_state_to(UIState::SavingPreset);
     });
 
-    let ui_weak = ui_weak.clone();
-    tokio::spawn(async move {
+    tokio::spawn(clone!((ui_weak), async move {
         let picker = rfd::AsyncFileDialog::new()
             .add_filter("JSON files", &["json"])
             .set_title("Save Preset")
@@ -688,7 +652,7 @@ fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, mut preset: Preset) {
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             ui.switch_state_to(UIState::Idle(None));
         });
-    });
+    }));
 }
 
 fn on_open_build_folder(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore) {
@@ -712,24 +676,18 @@ fn on_packages_edited(
     debounce_task: &Arc<RwLock<Option<JoinHandle<()>>>>,
     text: &SharedString,
 ) {
-    {
-        let text = text.clone();
-        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.update_state(|s| {
-                s.packages_text = text;
-            });
+    let _ = ui_weak.upgrade_in_event_loop(clone!((text), move |ui| {
+        ui.update_state(|s| {
+            s.packages_text = text;
         });
-    }
+    }));
 
     let mut handle_lock = debounce_task.write().unwrap();
     if let Some(h) = handle_lock.take() {
         h.abort();
     }
 
-    let ui_weak = ui_weak.clone();
-    let core = core.clone();
-    let text = text.clone();
-    *handle_lock = Some(tokio::spawn(async move {
+    *handle_lock = Some(tokio::spawn(clone!((ui_weak, core, text), async move {
         // Wait for 500ms of inactivity
         tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -752,7 +710,7 @@ fn on_packages_edited(
                 s.removed_packages_text = removed_str.into();
             });
         });
-    }));
+    })));
 }
 
 fn on_profile_search_key_pressed(
@@ -849,34 +807,33 @@ fn on_profile_selected(
     let version = s.selected_version.to_string();
     ui.set_state(s);
 
-    let ui_weak = ui_weak.clone();
-    let core = core.clone();
-    let cache = cache.clone();
-    let get_image_builder = get_image_builder.clone();
-    tokio::spawn(async move {
-        let exists = set_image_exists(&ui_weak, &get_image_builder, &version, &target).await;
-        if exists {
-            fetch_and_update_packages(
-                &ui_weak,
-                core,
-                cache,
-                &get_image_builder,
-                &version,
-                &target,
-                &profile_id,
-            )
-            .await;
-        } else {
-            let _ = ui_weak.upgrade_in_event_loop(|ui| {
-                ui.switch_state_to(UIState::Idle(None));
+    tokio::spawn(clone!(
+        (ui_weak, core, cache, get_image_builder),
+        async move {
+            let exists = set_image_exists(&ui_weak, &get_image_builder, &version, &target).await;
+            if exists {
+                fetch_and_update_packages(
+                    &ui_weak,
+                    core,
+                    cache,
+                    &get_image_builder,
+                    &version,
+                    &target,
+                    &profile_id,
+                )
+                .await;
+            } else {
+                let _ = ui_weak.upgrade_in_event_loop(|ui| {
+                    ui.switch_state_to(UIState::Idle(None));
 
-                let ui_weak = ui.as_weak();
-                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.invoke_request_profile_search_focus();
+                    let ui_weak = ui.as_weak();
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.invoke_request_profile_search_focus();
+                    });
                 });
-            });
+            }
         }
-    });
+    ));
 }
 
 fn on_show_rcs_toggled(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore, show_rcs: bool) {
@@ -904,17 +861,11 @@ fn on_version_changed(
 ) {
     let version = version.to_string();
 
-    let _ = ui_weak.upgrade_in_event_loop({
-        let version = version.clone();
-        move |ui| {
-            ui.switch_state_to(UIState::LoadingProfiles(version));
-        }
-    });
+    let _ = ui_weak.upgrade_in_event_loop(clone!((version), move |ui| {
+        ui.switch_state_to(UIState::LoadingProfiles(version));
+    }));
 
-    let client = client.clone();
-    let core = core.clone();
-    let ui_weak = ui_weak.clone();
-    tokio::spawn(async move {
+    tokio::spawn(clone!((ui_weak, client, core), async move {
         if let Ok(profiles) = client.fetch_profiles(&version).await {
             if let Ok(mut c) = core.write() {
                 c.profiles = profiles;
@@ -941,7 +892,7 @@ fn on_version_changed(
                 });
             });
         }
-    });
+    }));
 }
 
 fn init<F, Fut>(
@@ -954,9 +905,8 @@ fn init<F, Fut>(
     Fut: Future<Output = bool> + Send + 'static,
 {
     let ui_weak = ui.as_weak();
-    let core = core.clone();
     let show_rcs = ui.get_state().show_rcs;
-    tokio::spawn(async move {
+    tokio::spawn(clone!((core), async move {
         if !is_containers_available().await {
             let _ = ui_weak.upgrade_in_event_loop(|ui| {
                 ui.update_state(|s| {
@@ -998,16 +948,12 @@ fn init<F, Fut>(
             return; // No versions, nothing to load
         };
 
-        let _ = ui_weak.upgrade_in_event_loop({
-            let filtered = filtered.clone();
-            let first_version = first_version.clone();
-            move |ui| {
-                ui.update_state(|s| {
-                    s.versions = Rc::new(VecModel::from(filtered)).into();
-                    s.switch_to(UIState::LoadingProfiles(first_version));
-                });
-            }
-        });
+        let _ = ui_weak.upgrade_in_event_loop(clone!((filtered, first_version), move |ui| {
+            ui.update_state(|s| {
+                s.versions = Rc::new(VecModel::from(filtered)).into();
+                s.switch_to(UIState::LoadingProfiles(first_version));
+            });
+        }));
 
         let profiles_res = client.fetch_profiles(&first_version).await;
         match profiles_res {
@@ -1042,7 +988,7 @@ fn init<F, Fut>(
                 ui.invoke_request_profile_search_focus();
             });
         });
-    });
+    }));
 }
 
 async fn fetch_and_update_packages(
@@ -1190,12 +1136,8 @@ async fn load_preset_from_path(
     })?;
 
     ui_weak.upgrade_in_event_loop({
-        let profile_id = profile_id.clone();
         let overlay_path = preset.overlay_path.clone();
-        let name = name.clone();
-        let model = model.clone();
-        let target = target.clone();
-        move |ui| {
+        clone!((profile_id, name, model, target), move |ui| {
             ui.update_state(|s| {
                 s.overlay_path_text = overlay_path.into();
                 s.packages_text = SharedString::new();
@@ -1205,7 +1147,7 @@ async fn load_preset_from_path(
                 s.selected_model = model.into();
                 s.selected_target = target.into();
             });
-        }
+        })
     })?;
 
     let current_series = get_release_series(version);
@@ -1250,10 +1192,7 @@ async fn load_preset_from_path(
         .collect();
     let removed_str = removed.join(" ");
 
-    let original_pkgs = original_pkgs.clone();
-    let core = core.clone();
-
-    ui_weak.upgrade_in_event_loop(move |ui| {
+    ui_weak.upgrade_in_event_loop(clone!((original_pkgs, core), move |ui| {
         let mut s = ui.get_state();
         s.disabled_service_text = preset.disabled_services.into();
         s.extra_image_name_text = preset.extra_image_name.into();
@@ -1279,7 +1218,7 @@ async fn load_preset_from_path(
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             ui.invoke_request_profile_search_focus();
         });
-    })?;
+    }))?;
 
     Ok(())
 }
