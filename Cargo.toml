@@ -3,6 +3,7 @@ name = "bouwer"
 version = "0.1.0"
 authors = ["George Sapkin <george@sapk.in>"]
 description = "OpenWrt firmware builder GUI"
+license = "GPL-3.0-only"
 edition = "2024"
 
 [dependencies]
