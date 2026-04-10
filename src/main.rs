@@ -535,7 +535,8 @@ fn on_download(
             println!();
             drop(stream);
 
-            let exists = set_image_exists(&ui_weak, &get_image_builder, &version, &target).await;
+            let exists =
+                set_image_exists(&ui_weak, &get_image_builder, &version, &target, true).await;
             if exists {
                 fetch_and_update_packages(
                     &ui_weak,
@@ -810,7 +811,8 @@ fn on_profile_selected(
     tokio::spawn(clone!(
         (ui_weak, core, cache, get_image_builder),
         async move {
-            let exists = set_image_exists(&ui_weak, &get_image_builder, &version, &target).await;
+            let exists =
+                set_image_exists(&ui_weak, &get_image_builder, &version, &target, false).await;
             if exists {
                 fetch_and_update_packages(
                     &ui_weak,
@@ -1153,7 +1155,7 @@ async fn load_preset_from_path(
     let current_series = get_release_series(version);
     let preset_series = preset.release_series.clone();
 
-    let exists = set_image_exists(ui_weak, get_image_builder, version, &target).await;
+    let exists = set_image_exists(ui_weak, get_image_builder, version, &target, false).await;
     if !exists {
         let _ = ui_weak.upgrade_in_event_loop(|ui| {
             ui.switch_state_to(UIState::Idle(None));
@@ -1266,11 +1268,16 @@ async fn set_image_exists(
     get_image_builder: &GetImageBuilderFn,
     version: &str,
     target: &str,
+    wait: bool,
 ) -> bool {
     println!("Checking if image exists: {version} {target}");
 
     let image_builder = get_image_builder(version, target);
-    let exists = image_builder.exists().await;
+    let exists = if wait {
+        image_builder.wait_until_ready().await
+    } else {
+        image_builder.exists().await
+    };
 
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         ui.update_state(|s| {

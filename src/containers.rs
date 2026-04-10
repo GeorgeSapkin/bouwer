@@ -6,6 +6,7 @@ use std::env;
 use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use bollard::Docker;
 use bollard::container::LogOutput;
@@ -216,6 +217,20 @@ impl Containers {
         let stream = self.docker.logs(&id, Some(logs_options));
         let guard = ContainerGuard::new(self.clone(), id, stream);
         Ok(guard)
+    }
+
+    /// Waits for an image to be ready for use. Useful on Windows where images
+    /// might not be immediately available for running after a pull.
+    pub async fn wait_for_image(&self, image_tag: &str, retries: usize) -> bool {
+        for i in 0..retries {
+            if self.image_exists(image_tag).await {
+                return true;
+            }
+            if i < retries - 1 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+        false
     }
 
     fn get_vol_suffix() -> &'static str {

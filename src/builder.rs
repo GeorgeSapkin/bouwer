@@ -98,6 +98,10 @@ impl ImageBuilder {
         Ok(result)
     }
 
+    pub async fn wait_until_ready(&self) -> bool {
+        self.containers.wait_for_image(&self.image_tag, 10).await
+    }
+
     fn create_build_args(
         profile_id: &str,
         packages: &str,
