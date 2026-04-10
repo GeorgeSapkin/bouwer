@@ -16,7 +16,6 @@ i-slint-backend-winit = "1.15"
 rfd = "0.17"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-slint = { version = "1.15", default-features = false, features = ["backend-winit", "compat-1-2", "renderer-skia"] }
 tokio = { version = "1", features = [
     "fs",
     "io-util",
@@ -27,6 +26,14 @@ tokio = { version = "1", features = [
 ] }
 ureq = { version = "3", features = ["json"] }
 webbrowser = { version = "1.2.0", features = ["disable-wsl", "hardened"]}
+
+# Native Linux or Windows
+[target.'cfg(any(target_os = "linux", target_env = "msvc"))'.dependencies]
+slint = { version = "1.15", default-features = false, features = ["backend-winit", "compat-1-2", "renderer-skia"] }
+
+# Cross-compile Windows from Linux
+[target.'cfg(all(target_os = "windows", target_env = "gnu"))'.dependencies]
+slint = { version = "1.15", default-features = false, features = ["backend-winit", "compat-1-2", "renderer-software"] }
 
 [build-dependencies]
 slint-build = "1.15"
