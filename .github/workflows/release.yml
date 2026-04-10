@@ -1,0 +1,45 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build
+    uses: ./.github/workflows/reusable-build.yml
+    secrets: inherit
+
+  create-release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-slim
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir dist
+          chmod +x artifacts/bouwer-ubuntu-latest/bouwer
+          tar -czf dist/bouwer-${{ github.ref_name }}-linux-x86_64.tar.gz \
+            -C artifacts/bouwer-ubuntu-latest bouwer \
+            -C ${{ github.workspace }} LICENSE
+
+          zip -j dist/bouwer-${{ github.ref_name }}-windows-x86_64.zip \
+            artifacts/bouwer-windows-latest/bouwer.exe \
+            LICENSE
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+          generate_release_notes: true
