@@ -119,7 +119,7 @@ impl ImageBuilder {
 
         let optional_vars = [
             (!extra_image_name.is_empty()).then(|| format!("EXTRA_IMAGE_NAME={extra_image_name}")),
-            (!rootfs_size.is_empty()).then(|| format!("ROOTFS_SIZE={rootfs_size}")),
+            (!rootfs_size.is_empty()).then(|| format!("ROOTFS_PARTSIZE={rootfs_size}")),
             (!disabled_services.is_empty())
                 .then(|| format!("DISABLED_SERVICES={disabled_services}")),
             has_overlay.then(|| "FILES=/overlay".to_string()),
