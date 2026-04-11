@@ -668,7 +668,9 @@ fn on_open_build_folder(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore) {
         return;
     }
     let build_folder_path = core.read().unwrap().config.build_path.join(target);
-    open_dir(&build_folder_path);
+    tokio::spawn(clone!((ui_weak, build_folder_path), async move {
+        open_dir(&ui_weak, &build_folder_path).await;
+    }));
 }
 
 fn on_packages_edited(
@@ -1088,6 +1090,15 @@ fn filter_versions(versions: &[String], show_rcs: bool) -> Vec<SharedString> {
         .collect()
 }
 
+#[cfg(target_os = "windows")]
+fn format_windows_path(path: &Path) -> String {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    let path = path.to_string_lossy();
+    path.strip_prefix(r"\\?\")
+        .unwrap_or(&path)
+        .replace('/', "\\")
+}
+
 fn get_build_status(line: &str) -> Option<(f32, String)> {
     BUILD_MILESTONES
         .iter()
@@ -1102,6 +1113,26 @@ fn get_release_series(version: &str) -> String {
     } else {
         version.to_string()
     }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn handle_open_result(
+    ui_weak: &slint::Weak<AppWindow>,
+    path: &Path,
+    result: &Result<std::process::ExitStatus, std::io::Error>,
+) {
+    if let Ok(status) = result
+        && status.success()
+    {
+        return;
+    }
+
+    let msg = format!("Failed to open folder: {}", path.display());
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        ui.update_state(|s| {
+            s.set_notification(Notification::Error, Some(&msg));
+        });
+    });
 }
 
 async fn load_preset_from_path(
@@ -1225,41 +1256,55 @@ async fn load_preset_from_path(
     Ok(())
 }
 
-fn open_dir(path: &Path) {
+async fn open_dir(ui_weak: &slint::Weak<AppWindow>, path: &Path) {
+    if !tokio::fs::try_exists(path).await.unwrap_or(false) {
+        #[cfg(target_os = "windows")]
+        let path_str = format_windows_path(path);
+
+        #[cfg(not(target_os = "windows"))]
+        let path_str = path.display().to_string();
+
+        let msg = format!("Folder does not exist: {path_str}");
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.update_state(|s| {
+                s.set_notification(Notification::Error, Some(&msg));
+            });
+        });
+        return;
+    }
+
     #[cfg(target_os = "linux")]
     {
         eprintln!("Attempting to open folder: {}", path.display());
-        let _ = Command::new("xdg-open")
+        let status = Command::new("xdg-open")
             .arg(path.as_os_str())
-            .spawn()
-            .map_err(|e| eprintln!("Failed to open folder on Linux: {e}"));
+            .status()
+            .await;
+        handle_open_result(ui_weak, path, &status);
     }
     #[cfg(target_os = "macos")]
     {
         eprintln!("Attempting to open folder: {}", path.display());
-        let _ = Command::new("open")
-            .arg(path.as_os_str())
-            .spawn()
-            .map_err(|e| eprintln!("Failed to open folder on macOS: {e}"));
+        let status = Command::new("open").arg(path.as_os_str()).status().await;
+        handle_open_result(ui_weak, path, &status);
     }
     #[cfg(target_os = "windows")]
     {
-        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let path_str = path.to_string_lossy();
-        let path = path_str
-            .strip_prefix(r"\\?\")
-            .unwrap_or(&path_str)
-            .replace('/', "\\");
-
-        eprintln!("Attempting to open folder: {path}");
-        let _ = Command::new("explorer")
-            .arg(path)
-            .spawn()
-            .map_err(|e| eprintln!("Failed to open folder: {e}"));
+        let path_str = format_windows_path(path);
+        eprintln!("Attempting to open folder: {path_str}");
+        let _ = Command::new("explorer").arg(&path_str).status().await;
+        // Explorer seems to return failure sometimes even when it opens a
+        // folder successfully
+        // handle_open_result(ui_weak, Path::new(&path_str), &status);
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
-        eprintln!("Opening file explorer is not supported on this OS.");
+        let msg = "Opening file explorer is not supported on this OS.";
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.update_state(|s| {
+                s.set_notification(Notification::Error, Some(&msg));
+            });
+        });
     }
 }
 
