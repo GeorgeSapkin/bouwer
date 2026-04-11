@@ -1,6 +1,6 @@
 [package]
 name = "bouwer"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["George Sapkin <george@sapk.in>"]
 description = "OpenWrt firmware builder GUI"
 license = "GPL-3.0-only"
