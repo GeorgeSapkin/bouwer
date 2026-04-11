@@ -31,10 +31,19 @@ pub enum UIState {
 pub trait AppWindowExt {
     fn get_state(&self) -> AppState;
     fn set_state(&self, state: AppState);
+    fn set_notification(&self, t: Notification, text: Option<&str>);
     fn switch_state_to(&self, next_state: UIState);
     fn update_state<F>(&self, f: F)
     where
         F: FnOnce(&mut AppState);
+}
+
+pub trait AppWindowWeakExt {
+    fn set_notification(&self, t: Notification, text: Option<&str>);
+    fn switch_state_to(&self, next_state: UIState);
+    fn update_state<F>(&self, f: F)
+    where
+        F: FnOnce(&mut AppState) + Send + 'static;
 }
 
 impl AppWindowExt for AppWindow {
@@ -44,6 +53,10 @@ impl AppWindowExt for AppWindow {
 
     fn set_state(&self, state: AppState) {
         self.global::<StateBridge>().set_state(state);
+    }
+
+    fn set_notification(&self, t: Notification, text: Option<&str>) {
+        self.update_state(|s| s.set_notification(t, text));
     }
 
     fn switch_state_to(&self, next_state: UIState) {
@@ -57,6 +70,28 @@ impl AppWindowExt for AppWindow {
         let mut state = self.get_state();
         f(&mut state);
         self.set_state(state);
+    }
+}
+
+impl AppWindowWeakExt for slint::Weak<AppWindow> {
+    fn set_notification(&self, t: Notification, text: Option<&str>) {
+        let text = text.map(ToString::to_string);
+        let _ = self.upgrade_in_event_loop(move |ui| {
+            ui.set_notification(t, text.as_deref());
+        });
+    }
+
+    fn switch_state_to(&self, next_state: UIState) {
+        self.update_state(|s| s.switch_to(next_state));
+    }
+
+    fn update_state<F>(&self, f: F)
+    where
+        F: FnOnce(&mut AppState) + Send + 'static,
+    {
+        let _ = self.upgrade_in_event_loop(move |ui| {
+            ui.update_state(f);
+        });
     }
 }
 
