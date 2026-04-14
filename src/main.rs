@@ -229,6 +229,21 @@ fn setup_callbacks(
             eprintln!("Failed to open GitHub link: {e}");
         }
     });
+
+    ui.window().on_close_requested(clone!((ui_weak), move || {
+        let Some(ui) = ui_weak.upgrade() else {
+            return slint::CloseRequestResponse::HideWindow;
+        };
+        if ui.get_state().busy {
+            ui.set_notification(
+                Notification::Warning,
+                Some("An operation is in progress. Please wait for it to finish before closing."),
+            );
+            slint::CloseRequestResponse::KeepWindowShown
+        } else {
+            slint::CloseRequestResponse::HideWindow
+        }
+    }));
 }
 
 fn on_build(
