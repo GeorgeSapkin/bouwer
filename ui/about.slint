@@ -31,7 +31,7 @@ export component AboutDialog inherits Rectangle {
 
     Rectangle {
         width: 400px;
-        height: 470px;
+        height: 450px;
         opacity: open-progress;
         transform-scale-x: 0.95 + (open-progress * 0.05);
         transform-scale-y: self.transform-scale-x;
@@ -49,51 +49,52 @@ export component AboutDialog inherits Rectangle {
         TouchArea { }
 
         VerticalBox {
-            padding: 20px;
+            padding: 0px;
             padding-bottom: 8px;
-            spacing: 15px;
-
-            HorizontalBox {
-                alignment: center;
-                padding: 0;
-                Image {
-                    source: @image-url("../assets/logo.svg");
-                    width: 150px;
-                    height: 150px;
-                    horizontal-alignment: center;
-                    image-rendering: pixelated;
-                }
-            }
-
-            VerticalBox {
-                padding: 0;
-                spacing: 5px;
-
-                Text {
-                    text: "Bouwer";
-                    font-size: 24px;
-                    font-weight: 700;
-                    horizontal-alignment: center;
-                    color: Palette.foreground;
-                }
-
-                Text {
-                    text: root.version;
-                    color: Palette.foreground;
-                    font-size: 14px;
-                    horizontal-alignment: center;
-                }
-            }
+            spacing: 10px;
 
             Rectangle {
                 background: Palette.control-background;
                 border-width: 1px;
                 border-color: Palette.border;
-                border-radius: 4px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                vertical-stretch: 1;
 
                 VerticalLayout {
-                    padding: 10px;
+                    padding: 20px;
                     spacing: 15px;
+                    HorizontalBox {
+                        alignment: center;
+                        padding: 0;
+                        Image {
+                            source: @image-url("../assets/logo.svg");
+                            width: 150px;
+                            height: 150px;
+                            horizontal-alignment: center;
+                            image-rendering: pixelated;
+                        }
+                    }
+
+                    VerticalBox {
+                        padding: 0;
+                        spacing: 5px;
+
+                        Text {
+                            text: "Bouwer";
+                            font-size: 24px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            color: Palette.foreground;
+                        }
+
+                        Text {
+                            text: root.version;
+                            color: Palette.foreground;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                        }
+                    }
 
                     Text {
                         text: "A simple interface for building custom OpenWrt firmware images using the official image builders.";
@@ -121,10 +122,6 @@ export component AboutDialog inherits Rectangle {
                         }
                     }
                 }
-            }
-
-            Rectangle {
-                vertical-stretch: 1;
             }
 
             HorizontalBox {
