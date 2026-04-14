@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::cache::MetadataCache;
-use crate::data::{OpenWrtOverview, OpenWrtVersions, Profile};
+use crate::domain::{OpenWrtOverview, OpenWrtVersions, Profile, Version};
 
 pub const USER_AGENT: &str = "BouwerOpenWrtFetcher/1.0";
 
@@ -21,7 +21,7 @@ impl OpenWrtClient {
         }
     }
 
-    pub async fn fetch_profiles(&self, version: &str) -> anyhow::Result<Vec<Profile>> {
+    pub async fn fetch_profiles(&self, version: &Version) -> anyhow::Result<Vec<Profile>> {
         if let Some(profiles) = self.cache.get_profiles(version).await {
             return Ok(profiles);
         }
@@ -44,17 +44,20 @@ impl OpenWrtClient {
         Ok(profiles)
     }
 
-    pub async fn fetch_versions(&self) -> anyhow::Result<Vec<String>> {
+    pub async fn fetch_versions(&self) -> anyhow::Result<Vec<Version>> {
         let url = format!("{}/.versions.json", self.base_url);
         println!("Fetching versions from {url}");
-        tokio::task::spawn_blocking(move || {
-            Ok(ureq::get(&url)
-                .header("User-Agent", USER_AGENT)
-                .call()?
-                .body_mut()
-                .read_json::<OpenWrtVersions>()?
-                .versions_list)
+        let versions: Vec<Version> = tokio::task::spawn_blocking(move || {
+            Ok::<Vec<Version>, anyhow::Error>(
+                ureq::get(&url)
+                    .header("User-Agent", USER_AGENT)
+                    .call()?
+                    .body_mut()
+                    .read_json::<OpenWrtVersions>()?
+                    .versions_list,
+            )
         })
-        .await?
+        .await??;
+        Ok(versions)
     }
 }

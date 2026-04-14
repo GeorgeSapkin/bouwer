@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::data::Profile;
+use crate::domain::{Profile, ProfileId, Target, Version};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -23,7 +23,7 @@ impl MetadataCache {
         }
     }
 
-    pub async fn get_profiles(&self, version: &str) -> Option<Vec<Profile>> {
+    pub async fn get_profiles(&self, version: &Version) -> Option<Vec<Profile>> {
         let cache_file = self.get_profile_path(version);
         let content = tokio::fs::read_to_string(&cache_file).await.ok()?;
         let profiles = serde_json::from_str::<Vec<Profile>>(&content).ok()?;
@@ -32,7 +32,7 @@ impl MetadataCache {
         Some(profiles)
     }
 
-    pub async fn store_profiles(&self, version: &str, profiles: &[Profile]) {
+    pub async fn store_profiles(&self, version: &Version, profiles: &[Profile]) {
         let _ = tokio::fs::create_dir_all(&self.cache_path).await;
         let cache_file = self.get_profile_path(version);
 
@@ -44,9 +44,9 @@ impl MetadataCache {
 
     pub async fn get_packages(
         &self,
-        version: &str,
-        target: &str,
-        profile_id: &str,
+        version: &Version,
+        target: &Target,
+        profile_id: &ProfileId,
     ) -> Option<String> {
         let cache_file = self.get_package_path(version, target, profile_id);
         let content = tokio::fs::read_to_string(&cache_file).await.ok()?;
@@ -58,9 +58,9 @@ impl MetadataCache {
 
     pub async fn store_packages(
         &self,
-        version: &str,
-        target: &str,
-        profile_id: &str,
+        version: &Version,
+        target: &Target,
+        profile_id: &ProfileId,
         packages: &str,
     ) {
         if packages.is_empty() {
@@ -78,14 +78,19 @@ impl MetadataCache {
         }
     }
 
-    fn get_profile_path(&self, version: &str) -> PathBuf {
+    fn get_profile_path(&self, version: &Version) -> PathBuf {
         self.cache_path.join(format!("profiles-{version}.json"))
     }
 
-    fn get_package_path(&self, version: &str, target: &str, profile_id: &str) -> PathBuf {
-        let target_slug = target.replace('/', "-");
+    fn get_package_path(
+        &self,
+        version: &Version,
+        target: &Target,
+        profile_id: &ProfileId,
+    ) -> PathBuf {
         self.cache_path.join(format!(
-            "packages-{version}-{target_slug}-{profile_id}.json"
+            "packages-{version}-{}-{profile_id}.json",
+            target.to_slug()
         ))
     }
 }

@@ -5,6 +5,7 @@
 use slint::{ComponentHandle, SharedString, VecModel};
 use std::rc::Rc;
 
+use crate::domain::Version;
 use crate::{AppState, AppWindow, StateBridge};
 
 #[derive(Clone, PartialEq)]
@@ -20,7 +21,7 @@ pub enum UIState {
     },
     FetchingPackages,
     LoadingPreset,
-    LoadingProfiles(String),
+    LoadingProfiles(Version),
     LoadingVersions,
     SavingPreset,
     SelectBuildFolder,
@@ -144,7 +145,7 @@ impl AppState {
             UIState::LoadingProfiles(version) => {
                 self.search_text = "".into();
                 self.selected_id = SharedString::new();
-                self.selected_version = version.into();
+                self.selected_version = version.to_string().into();
                 self.set_busy("Fetching profiles", true);
             }
             UIState::LoadingVersions => self.set_busy("Fetching versions", true),
@@ -170,7 +171,7 @@ impl AppState {
         self.progress_value = 0.0;
         self.progress_visible = false;
         self.removed_packages_text = SharedString::new();
-        self.rootfs_size_value = SharedString::new();
+        self.rootfs_size_text = SharedString::new();
         self.selected_id = SharedString::new();
         self.selected_model = SharedString::new();
         self.selected_target = SharedString::new();

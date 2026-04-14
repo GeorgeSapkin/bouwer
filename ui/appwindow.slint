@@ -45,7 +45,7 @@ export struct AppState {
     progress_value: float,
     progress_visible: bool,
     removed_packages_text: string,
-    rootfs_size_value: string,
+    rootfs_size_text: string,
     search_text: string,
     selected_id: string,
     selected_model: string,
@@ -73,7 +73,7 @@ export global StateBridge {
     callback profile_search_edited(string);
     callback profile_search_key_pressed(KeyEvent) -> bool;
     callback profile_selected(string);
-    callback save_preset_requested(string, string, string, string, string, string, string);
+    callback save_preset_requested(string, string, string, int, string, string, string);
     callback select_build_folder_requested();
     callback select_overlay_folder_requested();
     callback show_rcs_toggled(bool);
@@ -434,10 +434,14 @@ export component AppWindow inherits Window {
                         }
 
                         rootfs_size := LineEdit {
-                            text <=> StateBridge.state.rootfs_size_value;
+                            text <=> root.state.rootfs_size_text;
                             enabled: !root.state.busy && root.state.image_exists;
                             input-type: InputType.number;
                             placeholder_text: "default";
+                            edited(t) => {
+                                // There's no to-int or to-number atm
+                                root.state.rootfs_size_value = t.to-float();
+                            }
                         }
                     }
 

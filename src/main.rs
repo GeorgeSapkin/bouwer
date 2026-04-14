@@ -28,8 +28,7 @@ mod client;
 mod clone;
 mod config;
 mod containers;
-mod data;
-mod profiles;
+mod domain;
 mod state;
 
 use builder::ImageBuilder;
@@ -37,10 +36,7 @@ use cache::MetadataCache;
 use client::OpenWrtClient;
 use config::Config;
 use containers::Containers;
-use data::{Preset, Profile};
-use profiles::{
-    filter_profiles, find_profile_by_display_name, format_profile, get_all_models_string,
-};
+use domain::{Preset, Profile, ProfileId, ProfileSliceExt, Target, Version};
 use state::{AppWindowExt, AppWindowWeakExt, Notification, UIState};
 
 slint::include_modules!();
@@ -50,7 +46,7 @@ const BASE_URL: &str = "https://downloads.openwrt.org";
 const EXTRA_PACKAGES: &str = "luci luci-app-attendedsysupgrade";
 const IMAGE_NAME: &str = "openwrt/imagebuilder";
 const MIN_SEARCH_CHARS: usize = 3;
-const MIN_SERIES: usize = 21;
+const MIN_SERIES: u8 = 21;
 const SIZE_MIB: f32 = 1024.0 * 1024.0;
 
 const BUILD_MILESTONES: &[(&str, f32, &str)] = &[
@@ -68,12 +64,12 @@ pub struct AppCore {
     pub config: Config,
     pub packages: Vec<String>,
     pub profiles: Vec<Profile>,
-    pub versions: Vec<String>,
+    pub versions: Vec<Version>,
 }
 
 pub type SharedCore = Arc<RwLock<AppCore>>;
 
-type GetImageBuilderFn = Arc<dyn Fn(&str, &str) -> ImageBuilder + Send + Sync>;
+type GetImageBuilderFn = Arc<dyn Fn(&Version, &Target) -> ImageBuilder + Send + Sync>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -96,8 +92,8 @@ async fn main() -> anyhow::Result<()> {
     let get_image_builder: GetImageBuilderFn = {
         Arc::new(clone!((core), move |version, target| {
             let containers = Containers::new().unwrap();
-            let build_path = &core.read().unwrap().config.build_path;
-            ImageBuilder::new(containers.clone(), IMAGE_NAME, build_path, version, target)
+            let build_path = core.read().unwrap().config.build_path.clone();
+            ImageBuilder::new(containers.clone(), IMAGE_NAME, &build_path, version, target)
         }))
     };
 
@@ -174,14 +170,14 @@ fn setup_callbacks(
             on_save_preset(
                 &ui_weak,
                 Preset {
-                    release_series: String::new(),
-                    target: target.into(),
-                    profile_id: profile_id.into(),
-                    extra_image_name: extra_image_name.into(),
-                    rootfs_size: rootfs_size.into(),
-                    packages: packages.into(),
-                    disabled_services: disabled_services.into(),
-                    overlay_path: overlay_path.into(),
+                    release_series: String::new().into(),
+                    target: target.to_string().into(),
+                    profile_id: profile_id.to_string().into(),
+                    extra_image_name: extra_image_name.to_string(),
+                    rootfs_size: rootfs_size.cast_unsigned(),
+                    packages: packages.to_string(),
+                    disabled_services: disabled_services.to_string(),
+                    overlay_path: overlay_path.to_string().into(),
                 },
             );
         }
@@ -226,8 +222,8 @@ fn setup_callbacks(
         })
     });
 
-    state_bridge.on_profile_search_edited(clone!((ui_weak, core), move |search| {
-        on_profile_search(&ui_weak, &core, &search);
+    state_bridge.on_profile_search_edited(clone!((ui_weak, core), move |query| {
+        on_profile_search(&ui_weak, &core, &query);
     }));
 
     state_bridge.on_profile_search_key_pressed(clone!((ui_weak), move |event| {
@@ -267,9 +263,9 @@ fn on_build(
     };
     let s = ui.get_state();
 
-    let version = s.selected_version.to_string();
-    let target = s.selected_target.to_string();
-    let profile_id = s.selected_id.to_string();
+    let version = Version::from(s.selected_version.to_string());
+    let target = Target::from(s.selected_target.to_string());
+    let profile_id = ProfileId::from(s.selected_id.to_string());
 
     let packages = {
         let current_set: HashSet<_> = s.packages_text.split_whitespace().collect();
@@ -291,7 +287,7 @@ fn on_build(
     };
 
     let extra_image_name = s.extra_image_name_text.to_string();
-    let rootfs_size = s.rootfs_size_value.to_string();
+    let rootfs_size = s.rootfs_size_value.cast_unsigned();
     let disabled_services = s.disabled_service_text.to_string();
     let overlay_path = s.overlay_path_text.to_string();
 
@@ -300,11 +296,6 @@ fn on_build(
         .filter(|c| c.is_alphanumeric() || *c == '-')
         .collect();
 
-    if version.is_empty() || target.is_empty() || profile_id.is_empty() {
-        eprintln!("Cannot build: Version, Target, or Profile ID is missing.");
-        ui_weak.switch_state_to(UIState::Idle(None));
-        return;
-    }
     tokio::spawn(clone!((ui_weak, core, get_image_builder), async move {
         println!("Initializing...");
         ui_weak.switch_state_to(UIState::Building {
@@ -313,7 +304,7 @@ fn on_build(
         });
 
         let build_path = core.read().unwrap().config.build_path.clone();
-        let build_folder_path = build_path.join(&target);
+        let build_folder_path = build_path.join(target.to_path());
 
         let now = Local::now().format("%Y-%m-%d-%H-%M-%S");
         let filename = format!("build-{version}-{profile_id}-{now}.log");
@@ -336,9 +327,9 @@ fn on_build(
                 &profile_id,
                 &packages,
                 &extra_image_name,
-                &rootfs_size,
+                rootfs_size,
                 &disabled_services,
-                &overlay_path,
+                (!overlay_path.is_empty()).then(|| Path::new(overlay_path.as_str())),
             )
             .await;
 
@@ -435,9 +426,9 @@ fn on_download(
         };
         let s = ui.get_state();
         (
-            s.selected_version.to_string(),
-            s.selected_target.to_string(),
-            s.selected_id.to_string(),
+            Version::from(s.selected_version.to_string()),
+            Target::from(s.selected_target.to_string()),
+            ProfileId::from(s.selected_id.to_string()),
         )
     };
 
@@ -540,7 +531,7 @@ fn on_load_preset(
     let version = {
         let Some(ui) = ui_weak.upgrade() else { return };
         let s = ui.get_state();
-        s.selected_version.to_string()
+        Version::from(s.selected_version.to_string())
     };
 
     ui_weak.switch_state_to(UIState::Idle(None));
@@ -576,13 +567,7 @@ fn on_load_preset(
     ));
 }
 
-fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, mut preset: Preset) {
-    let Some(ui) = ui_weak.upgrade() else {
-        return;
-    };
-    let version = ui.get_state().selected_version.to_string();
-    preset.release_series = get_release_series(&version);
-
+fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, preset: Preset) {
     let filename = if preset.extra_image_name.is_empty() {
         format!("preset-{}.json", preset.profile_id)
     } else {
@@ -621,13 +606,13 @@ fn on_open_build_folder(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore) {
         return;
     };
     let s = ui.get_state();
-    let version = s.selected_version.to_string();
-    let target = s.selected_target.to_string();
-    if version.is_empty() || target.is_empty() {
-        eprintln!("Cannot open folder: Version or Target is missing.");
-        return;
-    }
-    let build_folder_path = core.read().unwrap().config.build_path.join(target);
+    let target_str = s.selected_target.to_string();
+    let build_folder_path = core
+        .read()
+        .unwrap()
+        .config
+        .build_path
+        .join(Target::from(target_str).to_path());
     tokio::spawn(clone!((ui_weak, build_folder_path), async move {
         open_dir(&ui_weak, &build_folder_path).await;
     }));
@@ -713,18 +698,19 @@ fn on_profile_search_key_pressed(
     }
 }
 
-fn on_profile_search(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore, search: &SharedString) {
+fn on_profile_search(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore, query: &SharedString) {
     let Some(ui) = ui_weak.upgrade() else { return };
     let mut s = ui.get_state();
     s.reset_profile();
     s.current_highlighted_profile_index = -1;
 
     let core = core.read().unwrap();
-    let filtered = if search.chars().count() >= MIN_SEARCH_CHARS {
-        filter_profiles(&core.profiles, search)
-            .iter()
+    let filtered = if query.chars().count() >= MIN_SEARCH_CHARS {
+        core.profiles
+            .filter(query)
+            .into_iter()
             .map(SharedString::from)
-            .collect::<Vec<_>>()
+            .collect()
     } else {
         vec![]
     };
@@ -745,7 +731,7 @@ fn on_profile_selected(
 
     let profile = {
         let core = core.read().unwrap();
-        find_profile_by_display_name(&core.profiles, name)
+        core.profiles.find_by_display_name(name)
     };
 
     let Some(profile) = profile else {
@@ -755,19 +741,27 @@ fn on_profile_selected(
     let mut s = ui.get_state();
     s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
     s.search_text = name.clone();
-    s.selected_id = profile.id.as_str().into();
-    s.selected_target = profile.target.as_str().into();
-    s.selected_model = get_all_models_string(&profile).as_str().into();
+    s.selected_id = profile.id.0.as_str().into();
+    s.selected_target = profile.target.to_string().into();
+    s.selected_model = profile.format_all_models().as_str().into();
 
     s.switch_to(UIState::FetchingPackages);
 
     let profile_id = profile.id.clone();
     let target = profile.target.clone();
-    let version = s.selected_version.to_string();
+    let version = Version::from(s.selected_version.to_string());
     ui.set_state(s);
 
     tokio::spawn(clone!(
-        (ui_weak, core, cache, get_image_builder),
+        (
+            ui_weak,
+            core,
+            cache,
+            get_image_builder,
+            version,
+            target,
+            profile_id
+        ),
         async move {
             let exists =
                 set_image_exists(&ui_weak, &get_image_builder, &version, &target, false).await;
@@ -819,10 +813,9 @@ fn on_version_changed(
     client: &OpenWrtClient,
     version: &SharedString,
 ) {
-    ui_weak.switch_state_to(UIState::LoadingProfiles(version.to_string()));
-
-    let version = version.to_string();
-    tokio::spawn(clone!((ui_weak, client, core), async move {
+    let version = Version::from(version.to_string());
+    ui_weak.switch_state_to(UIState::LoadingProfiles(version.clone()));
+    tokio::spawn(clone!((ui_weak, client, core, version), async move {
         if let Ok(profiles) = client.fetch_profiles(&version).await {
             if let Ok(mut c) = core.write() {
                 c.profiles = profiles;
@@ -886,7 +879,7 @@ fn init<F, Fut>(
         }
 
         let filtered = filter_versions(&versions, show_rcs);
-        let Some(first_version) = filtered.first().map(ToString::to_string) else {
+        let Some(first_version) = filtered.first().map(|s| Version::from(s.as_str())) else {
             ui_weak.set_notification(Notification::Error, Some("No OpenWrt versions found."));
             return; // No versions, nothing to load
         };
@@ -935,9 +928,9 @@ async fn fetch_and_update_packages(
     core: SharedCore,
     cache: MetadataCache,
     get_image_builder: &GetImageBuilderFn,
-    version: &str,
-    target: &str,
-    profile_id: &str,
+    version: &Version,
+    target: &Target,
+    profile_id: &ProfileId,
 ) {
     ui_weak.switch_state_to(UIState::FetchingPackages);
 
@@ -985,9 +978,9 @@ async fn fetch_and_update_packages(
 async fn fetch_packages_for_profile(
     cache: &MetadataCache,
     get_image_builder: &GetImageBuilderFn,
-    version: &str,
-    target: &str,
-    profile_id: &str,
+    version: &Version,
+    target: &Target,
+    profile_id: &ProfileId,
 ) -> anyhow::Result<String> {
     if let Some(packages) = cache.get_packages(version, target, profile_id).await {
         return Ok(packages);
@@ -1004,28 +997,12 @@ async fn fetch_packages_for_profile(
     Ok(result)
 }
 
-fn filter_versions(versions: &[String], show_rcs: bool) -> Vec<SharedString> {
+fn filter_versions(versions: &[Version], show_rcs: bool) -> Vec<SharedString> {
     versions
         .iter()
-        .filter(|v| {
-            (show_rcs || !v.contains("-rc"))
-                && (v
-                    .split('.')
-                    .next()
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .is_some_and(|m| m >= MIN_SERIES))
-        })
-        .map(SharedString::from)
+        .filter(|v| (show_rcs || v.rc.is_none()) && v.major >= MIN_SERIES)
+        .map(|v| SharedString::from(v.to_string()))
         .collect()
-}
-
-#[cfg(target_os = "windows")]
-fn format_windows_path(path: &Path) -> String {
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
-    let path = path.to_string_lossy();
-    path.strip_prefix(r"\\?\")
-        .unwrap_or(&path)
-        .replace('/', "\\")
 }
 
 fn get_build_status(line: &str) -> Option<(f32, String)> {
@@ -1033,15 +1010,6 @@ fn get_build_status(line: &str) -> Option<(f32, String)> {
         .iter()
         .find(|&&(prefix, _, _)| line.starts_with(prefix))
         .map(|&(_, progress, status)| (progress, status.to_owned()))
-}
-
-fn get_release_series(version: &str) -> String {
-    let parts: Vec<&str> = version.split('.').collect();
-    if parts.len() >= 2 {
-        format!("{}.{}", parts[0], parts[1])
-    } else {
-        version.to_string()
-    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1066,46 +1034,48 @@ async fn load_preset_from_path(
     path: &Path,
     cache: MetadataCache,
     get_image_builder: &GetImageBuilderFn,
-    version: &str,
+    version: &Version,
 ) -> anyhow::Result<()> {
     let content = tokio::fs::read_to_string(&path).await?;
     let preset: Preset = serde_json::from_str(&content)?;
-    let target_id = preset.target.clone();
-    let profile_id = preset.profile_id.clone();
 
     let found = {
         let core = core.read().unwrap();
         core.profiles
             .iter()
-            .find(|p| p.id == profile_id && p.target == target_id)
+            .find(|p| p.id == preset.profile_id && p.target == preset.target)
             .map(|p| {
-                let name = format_profile(p)
+                let name = p
+                    .format()
                     .first()
                     .cloned()
-                    .unwrap_or_else(|| p.id.clone());
-                (name, get_all_models_string(p), p.target.clone())
+                    .unwrap_or_else(|| p.id.to_string());
+                (name, p.format_all_models(), p.target.clone())
             })
     };
 
     let (name, model, target) = found.ok_or_else(|| {
         anyhow::anyhow!(
-            "Profile '{profile_id}' for target '{target_id}' not found in current version"
+            "Profile '{}' for target '{}' not found in current version",
+            preset.profile_id,
+            preset.target
         )
     })?;
 
+    let profile_id = preset.profile_id.clone();
     let overlay_path = preset.overlay_path.clone();
-    ui_weak.update_state(clone!((profile_id, name, model, target), move |s| {
-        s.overlay_path_text = overlay_path.into();
-        s.packages_text = SharedString::new();
-        s.removed_packages_text = SharedString::new();
-        s.search_text = name.into();
-        s.selected_id = profile_id.into();
-        s.selected_model = model.into();
-        s.selected_target = target.into();
-    }));
-
-    let current_series = get_release_series(version);
-    let preset_series = preset.release_series.clone();
+    ui_weak.update_state(clone!(
+        (profile_id, name, model, target, overlay_path),
+        move |s| {
+            s.overlay_path_text = overlay_path.to_string_lossy().as_ref().into();
+            s.packages_text = SharedString::new();
+            s.removed_packages_text = SharedString::new();
+            s.search_text = name.into();
+            s.selected_id = profile_id.0.as_str().into();
+            s.selected_model = model.into();
+            s.selected_target = target.to_string().into();
+        }
+    ));
 
     let exists = set_image_exists(ui_weak, get_image_builder, version, &target, false).await;
     if !exists {
@@ -1144,19 +1114,27 @@ async fn load_preset_from_path(
         .collect();
     let removed_str = removed.join(" ");
 
-    ui_weak.upgrade_in_event_loop(clone!((original_pkgs, core), move |ui| {
+    ui_weak.upgrade_in_event_loop(clone!((original_pkgs, core, version), move |ui| {
         let mut s = ui.get_state();
         s.disabled_service_text = preset.disabled_services.into();
         s.extra_image_name_text = preset.extra_image_name.into();
-        s.overlay_path_text = preset.overlay_path.into();
+        s.overlay_path_text = preset.overlay_path.to_string_lossy().as_ref().into();
         s.packages_text = preset.packages.into();
         s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
         s.removed_packages_text = removed_str.into();
-        s.rootfs_size_value = preset.rootfs_size.into();
+        s.rootfs_size_text = if preset.rootfs_size == 0 {
+            SharedString::new()
+        } else {
+            preset.rootfs_size.to_string().into()
+        };
         s.switch_to(UIState::Idle(None));
 
-        if !preset_series.is_empty() && preset_series != current_series {
-            let info_msg = format!("Package list from preset series {preset_series} might be incompatible with {current_series}.");
+        if !version.same_release_series(&preset.release_series) {
+            let info_msg = format!(
+                "Package list from preset series {} might be incompatible with {}.",
+                preset.release_series,
+                version.to_release_series()
+            );
             s.set_notification(Notification::Warning, Some(&info_msg));
         }
 
@@ -1177,13 +1155,7 @@ async fn load_preset_from_path(
 
 async fn open_dir(ui_weak: &slint::Weak<AppWindow>, path: &Path) {
     if !tokio::fs::try_exists(path).await.unwrap_or(false) {
-        #[cfg(target_os = "windows")]
-        let path_str = format_windows_path(path);
-
-        #[cfg(not(target_os = "windows"))]
-        let path_str = path.display().to_string();
-
-        let msg = format!("Folder does not exist: {path_str}");
+        let msg = format!("Folder does not exist: {}", path.display());
         ui_weak.set_notification(Notification::Error, Some(&msg));
         return;
     }
@@ -1205,9 +1177,11 @@ async fn open_dir(ui_weak: &slint::Weak<AppWindow>, path: &Path) {
     }
     #[cfg(target_os = "windows")]
     {
-        let path_str = format_windows_path(path);
-        eprintln!("Attempting to open folder: {path_str}");
-        let _ = Command::new("explorer").arg(&path_str).status().await;
+        eprintln!("Attempting to open folder: {}", path.display());
+        let _ = Command::new("explorer")
+            .arg(path.as_os_str())
+            .status()
+            .await;
         // Explorer seems to return failure sometimes even when it opens a
         // folder successfully
         // handle_open_result(ui_weak, Path::new(&path_str), &status);
@@ -1222,8 +1196,8 @@ async fn open_dir(ui_weak: &slint::Weak<AppWindow>, path: &Path) {
 async fn set_image_exists(
     ui_weak: &slint::Weak<AppWindow>,
     get_image_builder: &GetImageBuilderFn,
-    version: &str,
-    target: &str,
+    version: &Version,
+    target: &Target,
     wait: bool,
 ) -> bool {
     println!("Checking if image exists: {version} {target}");

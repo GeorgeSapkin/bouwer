@@ -3,11 +3,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use crate::domain::ImageTag;
 use bollard::Docker;
 use bollard::container::LogOutput;
 use bollard::errors::Error as BollardError;
@@ -21,8 +22,8 @@ use futures_util::{Stream, StreamExt};
 use tokio::fs;
 
 pub struct Volume {
-    pub src: String,
-    pub dest: String,
+    pub src: PathBuf,
+    pub dest: PathBuf,
 }
 
 #[derive(Clone)]
@@ -31,7 +32,6 @@ pub struct Containers {
     volume_suffix: String,
 }
 
-#[derive(Clone)]
 pub struct ContainerGuard<S> {
     containers: Containers,
     container_id: String,
@@ -39,7 +39,7 @@ pub struct ContainerGuard<S> {
 }
 
 impl<S> ContainerGuard<S> {
-    pub fn new(containers: Containers, container_id: String, stream: S) -> Self {
+    fn new(containers: Containers, container_id: String, stream: S) -> Self {
         Self {
             containers,
             container_id,
@@ -69,8 +69,8 @@ where
     }
 }
 
-/// Extension trait for streams of bollard `LogOutput` results to easily read them
-/// into a `String`.
+/// Extension trait for streams of bollard `LogOutput` results to easily read
+/// them into a `String`.
 pub trait LogStreamExt: Stream<Item = Result<LogOutput, BollardError>> {
     async fn read_to_string(mut self) -> Result<String, BollardError>
     where
@@ -144,18 +144,18 @@ impl Containers {
     }
 
     /// Checks if a specific container image exists locally
-    pub async fn image_exists(&self, image_tag: &str) -> bool {
-        self.docker.inspect_image(image_tag).await.is_ok()
+    pub async fn image_exists(&self, tag: &ImageTag) -> bool {
+        self.docker.inspect_image(&tag.0).await.is_ok()
     }
 
     /// Pulls the specified image
     pub fn pull_image(
         &self,
-        image_tag: &str,
+        image_tag: &ImageTag,
     ) -> impl Stream<Item = Result<CreateImageInfo, BollardError>> {
         self.docker.create_image(
             Some(CreateImageOptions {
-                from_image: Some(image_tag.to_string()),
+                from_image: image_tag.into(),
                 ..Default::default()
             }),
             None,
@@ -165,8 +165,8 @@ impl Containers {
 
     pub async fn run(
         &self,
-        image_tag: &str,
-        cmd: Vec<String>,
+        image_tag: &ImageTag,
+        cmd: impl Into<Vec<String>>,
         volumes: Vec<Volume>,
     ) -> anyhow::Result<ContainerGuard<impl Stream<Item = Result<LogOutput, BollardError>>>> {
         let binds = if volumes.is_empty() {
@@ -177,7 +177,9 @@ impl Containers {
                 let _ = fs::create_dir_all(&volume.src).await;
                 binds.push(format!(
                     "{}:{}{}",
-                    volume.src, volume.dest, self.volume_suffix
+                    volume.src.display(),
+                    volume.dest.display(),
+                    self.volume_suffix
                 ));
             }
             Some(binds)
@@ -191,8 +193,8 @@ impl Containers {
         };
 
         let config = ContainerCreateBody {
-            image: Some(image_tag.to_string()),
-            cmd: Some(cmd),
+            image: image_tag.into(),
+            cmd: Some(cmd.into()),
             host_config: Some(host_config),
             ..Default::default()
         };
@@ -221,9 +223,9 @@ impl Containers {
 
     /// Waits for an image to be ready for use. Useful on Windows where images
     /// might not be immediately available for running after a pull.
-    pub async fn wait_for_image(&self, image_tag: &str, retries: usize) -> bool {
+    pub async fn wait_for_image(&self, tag: &ImageTag, retries: usize) -> bool {
         for i in 0..retries {
-            if self.image_exists(image_tag).await {
+            if self.image_exists(tag).await {
                 return true;
             }
             if i < retries - 1 {

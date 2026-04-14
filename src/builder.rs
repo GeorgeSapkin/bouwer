@@ -9,11 +9,12 @@ use futures_util::Stream;
 use std::path::{Path, PathBuf};
 
 use crate::containers::{ContainerGuard, Containers, LogStreamExt, Volume};
+use crate::domain::{ImageTag, ProfileId, Target, Version};
 
 pub struct ImageBuilder {
     build_path: PathBuf,
     containers: Containers,
-    image_tag: String,
+    image_tag: ImageTag,
 }
 
 impl ImageBuilder {
@@ -21,11 +22,10 @@ impl ImageBuilder {
         containers: Containers,
         image_base: &str,
         build_path: &Path,
-        version: &str,
-        target: &str,
+        version: &Version,
+        target: &Target,
     ) -> Self {
-        let target_slug = target.replace('/', "-");
-        let image_tag = format!("{image_base}:{target_slug}-{version}");
+        let image_tag = ImageTag::new(target, version, image_base);
 
         Self {
             build_path: build_path.to_path_buf(),
@@ -36,12 +36,12 @@ impl ImageBuilder {
 
     pub async fn build_firmware(
         &self,
-        profile_id: &str,
+        profile_id: &ProfileId,
         packages: &str,
         extra_image_name: &str,
-        rootfs_size: &str,
+        rootfs_size: u32,
         disabled_services: &str,
-        overlay_path: &str,
+        overlay_path: Option<&Path>,
     ) -> anyhow::Result<ContainerGuard<impl Stream<Item = Result<LogOutput, BollardError>>>> {
         let cmd = Self::create_build_args(
             profile_id,
@@ -49,7 +49,7 @@ impl ImageBuilder {
             extra_image_name,
             rootfs_size,
             disabled_services,
-            !overlay_path.is_empty(),
+            overlay_path.is_some(),
         );
 
         let volumes = self.get_build_volumes(overlay_path);
@@ -64,7 +64,7 @@ impl ImageBuilder {
         self.containers.image_exists(&self.image_tag).await
     }
 
-    pub async fn fetch_package_list(&self, profile_id: &str) -> anyhow::Result<String> {
+    pub async fn fetch_package_list(&self, profile_id: &ProfileId) -> anyhow::Result<String> {
         let stdout = {
             let stream = self
                 .containers
@@ -78,7 +78,7 @@ impl ImageBuilder {
         };
 
         let mut default_pkgs = String::new();
-        let mut device_pkgs: String = String::new();
+        let mut device_pkgs = String::new();
         let mut in_profile_block = false;
         let profile_prefix = format!("{profile_id}:");
 
@@ -103,10 +103,10 @@ impl ImageBuilder {
     }
 
     fn create_build_args(
-        profile_id: &str,
+        profile_id: &ProfileId,
         packages: &str,
         extra_image_name: &str,
-        rootfs_size: &str,
+        rootfs_size: u32,
         disabled_services: &str,
         has_overlay: bool,
     ) -> Vec<String> {
@@ -119,7 +119,7 @@ impl ImageBuilder {
 
         let optional_vars = [
             (!extra_image_name.is_empty()).then(|| format!("EXTRA_IMAGE_NAME={extra_image_name}")),
-            (!rootfs_size.is_empty()).then(|| format!("ROOTFS_PARTSIZE={rootfs_size}")),
+            (rootfs_size > 0).then(|| format!("ROOTFS_PARTSIZE={rootfs_size}")),
             (!disabled_services.is_empty())
                 .then(|| format!("DISABLED_SERVICES={disabled_services}")),
             has_overlay.then(|| "FILES=/overlay".to_string()),
@@ -129,23 +129,23 @@ impl ImageBuilder {
         args
     }
 
-    fn get_build_volumes(&self, overlay_path: &str) -> Vec<Volume> {
+    fn get_build_volumes(&self, overlay_path: Option<&Path>) -> Vec<Volume> {
         let dl_path = self.build_path.join("dl");
         let mut volumes = vec![
             Volume {
-                src: self.build_path.display().to_string(),
-                dest: "/builder/bin/targets".to_string(),
+                src: self.build_path.clone(),
+                dest: PathBuf::from("/builder/bin/targets"),
             },
             Volume {
-                src: dl_path.display().to_string(),
-                dest: "/builder/dl".to_string(),
+                src: dl_path,
+                dest: PathBuf::from("/builder/dl"),
             },
         ];
 
-        if !overlay_path.is_empty() {
+        if let Some(path) = overlay_path {
             volumes.push(Volume {
-                src: overlay_path.to_string(),
-                dest: "/overlay".to_string(),
+                src: path.to_path_buf(),
+                dest: PathBuf::from("/overlay"),
             });
         }
 
