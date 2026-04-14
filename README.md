@@ -20,6 +20,8 @@ Bouwer means builder in Dutch.
   settings for newer OpenWrt versions.
 - Caches OpenWrt profile metadata, packages, and image builders to speed up
   subsequent operations.
+- Manages downloaded image builders and allows removing them from within the
+  app.
 - Supports OpenWrt version 21.02 and above, including release candidates.
 
 ## Requirements
@@ -34,7 +36,8 @@ Additionally, on Linux, Docker must be accessible _without_ super user
 privileges, by e.g. adding your user to the `docker` group.
 
 1 to 3 gigabytes of free disk space for each target and free disk space for the
-firmware images.
+firmware images. On Windows, image builder images are stored as part of Podman
+or Docker VMs, so you need to account for that when allocating space for them.
 
 Currently, modern Linux and Windows running on x86/64 are supported. macOS on
 aarch64 is doable, but there's no practical way for me to test this at the
@@ -103,6 +106,6 @@ The executable will be located in `target/release/`.
 
 ## License
 
-Copyright (C) 2026 George Sapkin
-
 GNU General Public License v3.0 only
+
+Copyright (C) 2026 George Sapkin
