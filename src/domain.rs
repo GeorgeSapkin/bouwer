@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::{
+    cmp::Ordering,
     fmt::{Display, Formatter},
     path::{Path, PathBuf},
 };
@@ -236,7 +237,7 @@ impl From<&Version> for ReleaseSeries {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(from = "String", into = "String")]
 pub struct Target {
     pub target: String,
@@ -288,6 +289,24 @@ impl From<&str> for Target {
     }
 }
 
+impl TryFrom<&ImageTag> for Target {
+    type Error = &'static str;
+
+    fn try_from(tag: &ImageTag) -> Result<Self, Self::Error> {
+        let (_, stripped) = tag.0.split_once(':').ok_or("invalid tag format")?;
+        let (idx, _) = stripped
+            .rmatch_indices('-')
+            .find(|&(i, _)| {
+                let suffix = &stripped[i + 1..];
+                suffix.starts_with(|c: char| c.is_ascii_digit()) && suffix.contains('.')
+            })
+            .ok_or("could not parse target and version")?;
+
+        let target_slug = &stripped[..idx];
+        Ok(Target::from(target_slug.replace('-', "/").as_str()))
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(from = "String")]
 pub struct Version {
@@ -296,7 +315,6 @@ pub struct Version {
     pub patch: u8,
     pub rc: Option<u8>,
 }
-
 impl Version {
     pub fn to_release_series(&self) -> ReleaseSeries {
         ReleaseSeries::from(self)
@@ -348,6 +366,44 @@ impl From<&str> for Version {
             patch,
             rc,
         }
+    }
+}
+
+impl Ord for Version {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.major
+            .cmp(&other.major)
+            .then(self.minor.cmp(&other.minor))
+            .then(self.patch.cmp(&other.patch))
+            .then(match (self.rc, other.rc) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (Some(a), Some(b)) => a.cmp(&b),
+            })
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl TryFrom<&ImageTag> for Version {
+    type Error = &'static str;
+
+    fn try_from(tag: &ImageTag) -> Result<Self, Self::Error> {
+        let (_, stripped) = tag.0.split_once(':').ok_or("invalid tag format")?;
+        let (idx, _) = stripped
+            .rmatch_indices('-')
+            .find(|&(i, _)| {
+                let suffix = &stripped[i + 1..];
+                suffix.starts_with(|c: char| c.is_ascii_digit()) && suffix.contains('.')
+            })
+            .ok_or("could not parse target and version")?;
+
+        Ok(Version::from(&stripped[idx + 1..]))
     }
 }
 

@@ -1,0 +1,102 @@
+// Copyright (C) 2026 George Sapkin
+//
+// SPDX-License-Identifier: GPL-3.0-only
+
+import {
+    HorizontalBox,
+    ListView,
+    Palette,
+    VerticalBox,
+} from "std-widgets.slint";
+
+export struct ImageBuilderItem {
+    tag: string,
+    version: string,
+    target: string,
+    size: string,
+}
+
+export component ImageBuilderList inherits Rectangle {
+    in property <[ImageBuilderItem]> builders;
+    in property <bool> busy;
+
+    callback delete_builder(string);
+
+    background: Palette.control-background;
+    border-width: 1px;
+    border-color: Palette.border;
+    border-radius: 4px;
+
+    VerticalBox {
+        padding: 4px;
+
+        ListView {
+            for item in root.builders: Rectangle {
+                background: (item_touch.has-hover || delete_touch.has-hover) ? Palette.alternate-background : transparent;
+                animate background { duration: 125ms; }
+                border-radius: 4px;
+
+                item_touch := TouchArea { }
+
+                HorizontalBox {
+                    padding: 8px;
+                    spacing: 15px;
+
+                    Text {
+                        text: item.version;
+                        font-size: 14px;
+                        overflow: elide;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        width: 50px;
+                    }
+
+                    Text {
+                        text: item.target;
+                        font-size: 14px;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: item.size;
+                        font-size: 14px;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        width: 80px;
+                    }
+
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 4px;
+                        background: delete_touch.has-hover ? Palette.control-background : transparent;
+                        animate background {
+                            duration: 150ms;
+                            easing: ease-in-out;
+                        }
+
+                        delete_icon := Path {
+                            commands: "M 2 2 L 12 12 M 12 2 L 2 12";
+                            stroke: root.busy ? Palette.border : delete_touch.has-hover ? #ff5252 : Palette.foreground;
+                            stroke-width: delete_touch.has-hover ? 2px : 1.5px;
+                            height: 12px;
+                            width: 12px;
+                            opacity: delete_touch.has-hover ? 1.0 : 0.6;
+
+                            animate stroke, stroke-width, opacity { duration: 150ms; }
+                        }
+
+                        delete_touch := TouchArea {
+                            enabled: !root.busy;
+                            clicked => {
+                                root.delete_builder(item.tag);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -14,8 +14,8 @@ use bollard::container::LogOutput;
 use bollard::errors::Error as BollardError;
 use bollard::models::{ContainerCreateBody, CreateImageInfo};
 use bollard::query_parameters::{
-    CreateContainerOptions, CreateImageOptions, LogsOptions, RemoveContainerOptions,
-    StartContainerOptions, WaitContainerOptions,
+    CreateContainerOptions, CreateImageOptions, ListImagesOptions, LogsOptions,
+    RemoveContainerOptions, RemoveImageOptions, StartContainerOptions, WaitContainerOptions,
 };
 use bollard::service::HostConfig;
 use futures_util::{Stream, StreamExt};
@@ -138,14 +138,34 @@ impl Containers {
         })
     }
 
+    /// Checks if a specific container image exists locally
+    pub async fn image_exists(&self, tag: &ImageTag) -> bool {
+        self.docker.inspect_image(&tag.0).await.is_ok()
+    }
+
     /// Checks if the container daemon is available
     pub async fn is_available(&self) -> bool {
         self.docker.ping().await.is_ok()
     }
 
-    /// Checks if a specific container image exists locally
-    pub async fn image_exists(&self, tag: &ImageTag) -> bool {
-        self.docker.inspect_image(&tag.0).await.is_ok()
+    pub async fn list_images(&self, prefix: &str) -> anyhow::Result<Vec<(String, i64)>> {
+        let images = self.docker.list_images(None::<ListImagesOptions>).await?;
+        let mut tags = Vec::new();
+        for img in images {
+            for tag in img.repo_tags {
+                if tag.contains(prefix) {
+                    tags.push((tag, img.size));
+                }
+            }
+        }
+        Ok(tags)
+    }
+
+    pub async fn remove_image(&self, tag: &str) -> anyhow::Result<()> {
+        self.docker
+            .remove_image(tag, None::<RemoveImageOptions>, None)
+            .await?;
+        Ok(())
     }
 
     /// Pulls the specified image

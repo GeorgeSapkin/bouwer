@@ -8,8 +8,10 @@ use anyhow::Context;
 use bollard::container::LogOutput;
 use chrono::Local;
 use futures_util::StreamExt;
+use human_bytes::human_bytes;
 use slint::platform::Key;
 use slint::{Model, SharedString, VecModel};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::future::Future;
@@ -36,7 +38,7 @@ use cache::MetadataCache;
 use client::OpenWrtClient;
 use config::Config;
 use containers::Containers;
-use domain::{Preset, Profile, ProfileId, ProfileSliceExt, Target, Version};
+use domain::{ImageTag, Preset, Profile, ProfileId, ProfileSliceExt, Target, Version};
 use state::{AppWindowExt, AppWindowWeakExt, Notification, UIState};
 
 slint::include_modules!();
@@ -47,7 +49,7 @@ const EXTRA_PACKAGES: &str = "luci luci-app-attendedsysupgrade";
 const IMAGE_NAME: &str = "openwrt/imagebuilder";
 const MIN_SEARCH_CHARS: usize = 3;
 const MIN_SERIES: u8 = 21;
-const SIZE_MIB: f32 = 1024.0 * 1024.0;
+const SIZE_MB: f64 = 1_000_000.0;
 
 const BUILD_MILESTONES: &[(&str, f32, &str)] = &[
     ("Generate local signing", 0.1, "Generating signing keys"),
@@ -151,6 +153,10 @@ fn setup_callbacks(
         }
     ));
 
+    state_bridge.on_delete_builder_requested(clone!((ui_weak, get_image_builder), move |data| {
+        on_delete_builder(&ui_weak, &get_image_builder, &data);
+    }));
+
     state_bridge.on_load_preset_requested(clone!(
         (ui_weak, core, cache, get_image_builder),
         move |version| {
@@ -215,6 +221,10 @@ fn setup_callbacks(
             on_profile_selected(&ui_weak, &core, &cache, &get_image_builder, &data);
         }
     ));
+
+    state_bridge.on_refresh_builders_requested(clone!((ui_weak), move || {
+        tokio::spawn(refresh_downloaded_builders(ui_weak.clone()));
+    }));
 
     state_bridge.on_show_rcs_toggled(clone!((ui_weak, core), move |data| {
         on_show_rcs_toggled(&ui_weak, &core, data);
@@ -386,6 +396,49 @@ fn on_build(
     }));
 }
 
+fn on_delete_builder(
+    ui_weak: &slint::Weak<AppWindow>,
+    get_image_builder: &GetImageBuilderFn,
+    data: &DeleteBuilderData,
+) {
+    let tag = data.tag.clone();
+    println!("Deleting image builder {tag}");
+    ui_weak.switch_state_to(UIState::Idle(Some("Deleting image builder".into())));
+    tokio::spawn(clone!((ui_weak, data, get_image_builder), async move {
+        let Ok(containers) = Containers::new() else {
+            ui_weak.switch_state_to(UIState::Idle(None));
+            return;
+        };
+
+        match containers.remove_image(data.tag.as_str()).await {
+            Ok(()) => {
+                let tag = ImageTag(data.tag.to_string());
+                let msg = match (Target::try_from(&tag), Version::try_from(&tag)) {
+                    (Ok(target), Ok(version)) => {
+                        format!("Image builder for {version} {target} deleted.")
+                    }
+                    _ => format!("Image builder {} deleted.", data.tag),
+                };
+                ui_weak.set_notification(Notification::Info, Some(msg.as_str()));
+
+                refresh_downloaded_builders(ui_weak.clone()).await;
+
+                if !data.profile_id.is_empty() {
+                    let version = Version::from(data.version.as_str());
+                    let target = Target::from(data.target.as_str());
+                    set_image_exists(&ui_weak, &get_image_builder, &version, &target, false).await;
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to delete image: {e}");
+                ui_weak.set_notification(Notification::Error, Some(&msg));
+            }
+        }
+
+        ui_weak.switch_state_to(UIState::Idle(None));
+    }));
+}
+
 #[allow(clippy::cast_precision_loss)]
 fn on_download_builder(
     ui_weak: &slint::Weak<AppWindow>,
@@ -436,10 +489,10 @@ fn on_download_builder(
                         }
 
                         let status_text: String = if total_sum > 0 {
-                            let current_mib = total_current as f32 / SIZE_MIB;
-                            let total_mib = total_sum as f32 / SIZE_MIB;
+                            let current_mib = total_current as f64 / SIZE_MB;
+                            let total_mib = total_sum as f64 / SIZE_MB;
                             format!(
-                                "Downloading image builder: {current_mib:.2} / {total_mib:.2} MiB"
+                                "Downloading image builder: {current_mib:.2} / {total_mib:.2} MB"
                             )
                         } else {
                             "Downloading image builder".to_string()
@@ -481,6 +534,11 @@ fn on_download_builder(
                     &profile_id,
                 )
                 .await;
+
+                let _ = ui_weak.upgrade_in_event_loop(|ui| {
+                    ui.global::<StateBridge>()
+                        .invoke_refresh_builders_requested();
+                });
             } else {
                 ui_weak.switch_state_to(UIState::Idle(None));
             }
@@ -903,6 +961,8 @@ fn init<F, Fut>(
 
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             ui.invoke_recalculate_preview();
+            ui.global::<StateBridge>()
+                .invoke_refresh_builders_requested();
         });
     }));
 }
@@ -1233,6 +1293,65 @@ async fn open_dir(ui_weak: &slint::Weak<AppWindow>, path: &Path) {
         let msg = "Opening file explorer is not supported on this OS.";
         ui_weak.set_notification(Notification::Error, Some(&msg));
     }
+}
+
+#[allow(clippy::cast_precision_loss)]
+async fn refresh_downloaded_builders(ui_weak: slint::Weak<AppWindow>) {
+    let Ok(containers) = Containers::new() else {
+        return;
+    };
+
+    let Ok(tags) = containers.list_images(IMAGE_NAME).await else {
+        return;
+    };
+
+    let mut items_with_keys: Vec<(Option<(Version, Target)>, ImageBuilderItem)> = tags
+        .into_iter()
+        .map(|(tag_str, size)| {
+            let size_str = human_bytes(size as f64);
+            let image_tag = ImageTag(tag_str.clone());
+
+            if let (Ok(target), Ok(version)) =
+                (Target::try_from(&image_tag), Version::try_from(&image_tag))
+            {
+                return (
+                    Some((version.clone(), target.clone())),
+                    ImageBuilderItem {
+                        tag: tag_str.into(),
+                        version: version.to_string().into(),
+                        target: target.to_string().into(),
+                        size: size_str.into(),
+                    },
+                );
+            }
+
+            let shared_tag: SharedString = tag_str.into();
+            (
+                None,
+                ImageBuilderItem {
+                    tag: shared_tag.clone(),
+                    version: shared_tag,
+                    target: SharedString::default(),
+                    size: size_str.into(),
+                },
+            )
+        })
+        .collect();
+
+    items_with_keys.sort_by(|(ka, ia), (kb, ib)| match (ka, kb) {
+        (Some((v_a, t_a)), Some((v_b, t_b))) => v_b.cmp(v_a).then_with(|| t_a.cmp(t_b)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => ia.tag.cmp(&ib.tag),
+    });
+
+    let items: Vec<_> = items_with_keys.into_iter().map(|(_, item)| item).collect();
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        let model = Rc::new(VecModel::from(items));
+        ui.update_state(|s| {
+            s.downloaded_builders = model.into();
+        });
+    });
 }
 
 async fn set_image_exists(

@@ -12,6 +12,7 @@ anyhow = "1.0"
 bollard = "0.20"
 chrono = { version = "0.4", default-features = false, features = ["alloc", "clock"] }
 futures-util = "0.3"
+human_bytes = { version = "0.4", default-features = false }
 i-slint-backend-winit = "1.15"
 rfd = "0.17"
 serde = { version = "1.0", features = ["derive"] }

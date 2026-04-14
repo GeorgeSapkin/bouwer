@@ -19,6 +19,7 @@ pub enum UIState {
         progress: Option<f32>,
         status: Option<String>,
     },
+    DeletingBuilder,
     FetchingPackages,
     LoadingPreset,
     LoadingProfiles(Version),
@@ -139,6 +140,7 @@ impl AppState {
                     self.status_text = s.into();
                 }
             }
+            UIState::DeletingBuilder => self.set_busy("Deleting image builder", true),
             UIState::FetchingPackages => self.set_busy("Fetching package list", true),
             UIState::LoadingPreset => self.set_busy("Loading preset", true),
             UIState::SavingPreset => self.set_busy("Saving preset", true),

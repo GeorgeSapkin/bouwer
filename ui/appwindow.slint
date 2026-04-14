@@ -19,6 +19,7 @@ import {
 } from "std-widgets.slint";
 
 import { AboutDialog } from "about.slint";
+import { ImageBuilderItem, ImageBuilderList } from "builderlist.slint";
 import { EditableComboBox } from "combobox.slint";
 import { Notification } from "notification.slint";
 import { Tooltip } from "tooltip.slint";
@@ -33,6 +34,7 @@ export struct AppState {
     busy: bool,
     current_highlighted_profile_index: int,
     disabled_services_text: string,
+    downloaded_builders: [ImageBuilderItem],
     extra_image_name_text: string,
     image_exists: bool,
     notification: string,
@@ -76,6 +78,13 @@ export struct DownloadBuilderData {
     profile_id: string,
 }
 
+export struct DeleteBuilderData {
+    tag: string,
+    version: string,
+    target: string,
+    profile_id: string,
+}
+
 export struct ProfileData {
     version: string,
     name: string,
@@ -100,6 +109,7 @@ export global StateBridge {
 
     callback build_path_edited(string);
     callback build_requested(BuildData);
+    callback delete_builder_requested(DeleteBuilderData);
     callback download_builder_requested(DownloadBuilderData);
     callback load_preset_requested(string);
     callback open_build_folder_requested(string);
@@ -112,6 +122,7 @@ export global StateBridge {
     callback select_build_folder_requested();
     callback select_overlay_folder_requested();
     callback show_rcs_toggled(ShowRcsData);
+    callback refresh_builders_requested();
     callback update_build_preview(BuildData);
     callback version_changed(string);
 }
@@ -674,6 +685,66 @@ export component AppWindow inherits Window {
                         read-only: true;
                         font-family: "monospace";
                         wrap: word-wrap;
+                    }
+                }
+            }
+
+            Tab {
+                title: "Image builders";
+                VerticalBox {
+                    padding: 0px;
+                    padding-top: 10px;
+
+                    HorizontalBox {
+                        padding: 0px;
+                        Text {
+                            text: "Downloaded image builders:";
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+
+                        refresh_builders := Rectangle {
+                            width: 30px;
+                            height: 30px;
+                            border-radius: 4px;
+                            background: refresh_builders_touch.has-hover ? Palette.alternate-background : transparent;
+                            animate background {
+                                duration: 150ms;
+                                easing: ease-in-out;
+                            }
+
+                            Image {
+                                source: @image-url("../assets/refresh.svg");
+                                width: 18px;
+                                height: 18px;
+                                horizontal-alignment: center;
+                                image-rendering: pixelated;
+                                colorize: Palette.control-foreground;
+                            }
+
+                            refresh_builders_touch := TouchArea {
+                                clicked => {
+                                    StateBridge.refresh_builders_requested();
+                                }
+                            }
+                        }
+                    }
+
+                    ImageBuilderList {
+                        builders: root.state.downloaded_builders;
+                        busy: root.state.busy;
+                        delete_builder(tag) => {
+                            StateBridge.delete_builder_requested({
+                                tag: tag,
+                                version: root.state.selected_version,
+                                target: root.state.selected_target,
+                                profile_id: root.state.selected_id,
+                            });
+                        }
                     }
                 }
             }
