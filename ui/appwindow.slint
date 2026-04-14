@@ -28,6 +28,7 @@ global Constants {
 }
 
 export struct AppState {
+    build_command_preview: string,
     build_path_text: string,
     busy: bool,
     current_highlighted_profile_index: int,
@@ -111,16 +112,31 @@ export global StateBridge {
     callback select_build_folder_requested();
     callback select_overlay_folder_requested();
     callback show_rcs_toggled(ShowRcsData);
+    callback update_build_preview(BuildData);
     callback version_changed(string);
 }
 
 export component AppWindow inherits Window {
     property <AppState> state <=> StateBridge.state;
 
+    callback recalculate_preview();
     callback request_profile_search_focus();
 
     request_profile_search_focus => {
         profile_combo.focus();
+    }
+
+    recalculate_preview => {
+        StateBridge.update_build_preview({
+            version: root.state.selected_version,
+            target: root.state.selected_target,
+            profile_id: root.state.selected_id,
+            extra_image_name: root.state.extra_image_name_text,
+            rootfs_size: root.state.rootfs_size_text.to-float(),
+            packages: root.state.packages_text,
+            disabled_services: root.state.disabled_services_text,
+            overlay_path: root.state.overlay_path_text,
+        });
     }
 
     title: "Bouwer";
@@ -380,6 +396,9 @@ export component AppWindow inherits Window {
                             text <=> StateBridge.state.extra_image_name_text;
                             enabled: !root.state.busy && root.state.image_exists;
                             placeholder_text: "none";
+                            edited => {
+                                root.recalculate_preview();
+                            }
                         }
                     }
 
@@ -414,6 +433,7 @@ export component AppWindow inherits Window {
                         placeholder-text: "none";
                         edited(text) => {
                             StateBridge.packages_edited(text);
+                            root.recalculate_preview();
                         }
                     }
 
@@ -488,6 +508,9 @@ export component AppWindow inherits Window {
                             enabled: !root.state.busy && root.state.image_exists;
                             input-type: InputType.number;
                             placeholder_text: "default";
+                            edited(t) => {
+                                root.recalculate_preview();
+                            }
                         }
                     }
 
@@ -520,6 +543,9 @@ export component AppWindow inherits Window {
                         enabled: !root.state.busy && root.state.image_exists;
                         min-height: 60px;
                         placeholder-text: "none";
+                        edited => {
+                            root.recalculate_preview();
+                        }
                     }
 
                     HorizontalBox {
@@ -609,6 +635,45 @@ export component AppWindow inherits Window {
                                 StateBridge.select_build_folder_requested();
                             }
                         }
+                    }
+                }
+            }
+
+            Tab {
+                title: "Build details";
+                VerticalBox {
+                    padding: 0px;
+                    padding-top: 10px;
+
+                    build_command_rect := Rectangle {
+                        z: 90;
+                        HorizontalBox {
+                            padding: 0px;
+                            Text {
+                                text: "Build command:";
+                                font-size: 14px;
+                                horizontal-alignment: left;
+                            }
+                        }
+
+                        build_command_touch := TouchArea {
+                            width: build_command_rect.width;
+                            height: build_command_rect.height;
+
+                            build_command_tooltip := Tooltip {
+                                text: "Build command that will be passed to the image builder.";
+                                active: build_command_touch.has-hover;
+                                x: 0;
+                                y: parent.height + 8px;
+                            }
+                        }
+                    }
+
+                    TextEdit {
+                        text: root.state.build_command_preview;
+                        read-only: true;
+                        font-family: "monospace";
+                        wrap: word-wrap;
                     }
                 }
             }

@@ -224,6 +224,10 @@ fn setup_callbacks(
         on_version_changed(&ui_weak, &core, &client, &version);
     }));
 
+    state_bridge.on_update_build_preview(clone!((ui_weak, core), move |data| {
+        on_update_build_preview(&ui_weak, &core, &data);
+    }));
+
     state_bridge.on_open_github_link(|| {
         if let Err(e) = webbrowser::open(ABOUT_URL) {
             eprintln!("Failed to open GitHub link: {e}");
@@ -252,28 +256,10 @@ fn on_build(
     get_image_builder: &GetImageBuilderFn,
     data: &BuildData,
 ) {
+    let profile_id = ProfileId::from(data.profile_id.as_str());
     let version = Version::from(data.version.as_str());
     let target = Target::from(data.target.as_str());
-    let profile_id = ProfileId::from(data.profile_id.as_str());
-
-    let packages = {
-        let current_set: HashSet<_> = data.packages.split_whitespace().collect();
-        let core = core.read().unwrap();
-        let selected = data.packages.as_str();
-        let removed = core
-            .packages
-            .iter()
-            .filter(|p| !current_set.contains(p.as_str()))
-            .enumerate()
-            .fold(String::new(), |mut acc, (i, p)| {
-                if i > 0 {
-                    acc.push(' ');
-                }
-                write!(acc, "-{p}").unwrap();
-                acc
-            });
-        format!("{selected} {removed}")
-    };
+    let packages = get_build_packages(core, data.packages.as_str());
 
     let extra_image_name: String = data
         .extra_image_name
@@ -630,6 +616,10 @@ fn on_packages_edited(
         ui_weak.update_state(|s| {
             s.removed_packages_text = removed_str.into();
         });
+
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.invoke_recalculate_preview();
+        });
     })));
 }
 
@@ -786,6 +776,13 @@ fn on_show_rcs_toggled(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore, data
     });
 }
 
+fn on_update_build_preview(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore, data: &BuildData) {
+    let preview = get_build_command_preview(core, data);
+    ui_weak.update_state(move |s| {
+        s.build_command_preview = preview.into();
+    });
+}
+
 fn on_version_changed(
     ui_weak: &slint::Weak<AppWindow>,
     core: &SharedCore,
@@ -809,6 +806,10 @@ fn on_version_changed(
                 let _ = ui_weak.upgrade_in_event_loop(move |ui| {
                     ui.invoke_request_profile_search_focus();
                 });
+            });
+
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.invoke_recalculate_preview();
             });
         } else {
             ui_weak.update_state(move |s| {
@@ -899,6 +900,10 @@ fn init<F, Fut>(
                 ui.invoke_request_profile_search_focus();
             });
         });
+
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.invoke_recalculate_preview();
+        });
     }));
 }
 
@@ -951,6 +956,10 @@ async fn fetch_and_update_packages(
             ui.invoke_request_profile_search_focus();
         });
     });
+
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        ui.invoke_recalculate_preview();
+    });
 }
 
 /// Get default and device-specific packages from the image builder
@@ -982,6 +991,59 @@ fn filter_versions(versions: &[Version], show_rcs: bool) -> Vec<SharedString> {
         .filter(|v| (show_rcs || v.rc.is_none()) && v.major >= MIN_SERIES)
         .map(|v| SharedString::from(v.to_string()))
         .collect()
+}
+
+fn get_build_command_preview(core: &SharedCore, data: &BuildData) -> String {
+    let profile_id = ProfileId::from(data.profile_id.as_str());
+    if profile_id.0.is_empty() {
+        return String::new();
+    }
+
+    let packages = get_build_packages(core, data.packages.as_str());
+
+    let extra_image_name: String = data
+        .extra_image_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-')
+        .collect();
+
+    let args = ImageBuilder::create_build_args(
+        &profile_id,
+        &packages,
+        &extra_image_name,
+        data.rootfs_size.cast_unsigned(),
+        data.disabled_services.as_str(),
+        !data.overlay_path.is_empty(),
+    );
+
+    if args.len() <= 2 {
+        return args.join(" ");
+    }
+
+    format!(
+        "{} {}\n\n    {}",
+        args[0],
+        args[1],
+        args[2..].join("\n\n    ")
+    )
+}
+
+fn get_build_packages(core: &SharedCore, selected_packages: &str) -> String {
+    let current_set: HashSet<_> = selected_packages.split_whitespace().collect();
+    let core = core.read().unwrap();
+    let removed = core
+        .packages
+        .iter()
+        .filter(|p| !current_set.contains(p.as_str()))
+        .enumerate()
+        .fold(String::new(), |mut acc, (i, p)| {
+            if i > 0 {
+                acc.push(' ');
+            }
+            write!(acc, "-{p}").unwrap();
+            acc
+        });
+    format!("{selected_packages} {removed}")
 }
 
 fn get_build_status(line: &str) -> Option<(f32, String)> {
@@ -1126,6 +1188,7 @@ async fn load_preset_from_path(
         let ui_weak = ui.as_weak();
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             ui.invoke_request_profile_search_focus();
+            ui.invoke_recalculate_preview();
         });
     }))?;
 
@@ -1227,5 +1290,9 @@ async fn select_folder<F>(
     ui_weak.update_state(move |s| {
         update_state(s, &path);
         s.switch_to(UIState::Idle(None));
+    });
+
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        ui.invoke_recalculate_preview();
     });
 }

@@ -102,7 +102,7 @@ impl ImageBuilder {
         self.containers.wait_for_image(&self.image_tag, 10).await
     }
 
-    fn create_build_args(
+    pub fn create_build_args(
         profile_id: &ProfileId,
         packages: &str,
         extra_image_name: &str,
