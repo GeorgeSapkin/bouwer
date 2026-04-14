@@ -161,7 +161,7 @@ impl AppState {
     }
 
     pub fn reset_profile(&mut self) {
-        self.disabled_service_text = SharedString::new();
+        self.disabled_services_text = SharedString::new();
         self.extra_image_name_text = SharedString::new();
         self.image_exists = false;
         self.original_packages = Rc::new(VecModel::<SharedString>::default()).into();

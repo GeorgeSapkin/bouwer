@@ -140,51 +140,30 @@ fn setup_callbacks(
         }
     }));
 
-    state_bridge.on_build_requested(clone!((ui_weak, core, get_image_builder), move |_| {
-        on_build(&ui_weak, &core, &get_image_builder);
+    state_bridge.on_build_requested(clone!((ui_weak, core, get_image_builder), move |data| {
+        on_build(&ui_weak, &core, &get_image_builder, &data);
     }));
 
-    state_bridge.on_download_requested(clone!(
+    state_bridge.on_download_builder_requested(clone!(
         (ui_weak, core, cache, get_image_builder),
-        move || {
-            on_download(&ui_weak, &core, &cache, &get_image_builder);
+        move |data| {
+            on_download_builder(&ui_weak, &core, &cache, &get_image_builder, &data);
         }
     ));
 
     state_bridge.on_load_preset_requested(clone!(
         (ui_weak, core, cache, get_image_builder),
-        move || {
-            on_load_preset(&ui_weak, &core, &cache, &get_image_builder);
+        move |version| {
+            on_load_preset(&ui_weak, &core, &cache, &get_image_builder, &version);
         }
     ));
 
-    state_bridge.on_save_preset_requested(clone!(
-        (ui_weak),
-        move |target,
-              profile_id,
-              extra_image_name,
-              rootfs_size,
-              packages,
-              disabled_services,
-              overlay_path| {
-            on_save_preset(
-                &ui_weak,
-                Preset {
-                    release_series: String::new().into(),
-                    target: target.to_string().into(),
-                    profile_id: profile_id.to_string().into(),
-                    extra_image_name: extra_image_name.to_string(),
-                    rootfs_size: rootfs_size.cast_unsigned(),
-                    packages: packages.to_string(),
-                    disabled_services: disabled_services.to_string(),
-                    overlay_path: overlay_path.to_string().into(),
-                },
-            );
-        }
-    ));
+    state_bridge.on_save_preset_requested(clone!((ui_weak), move |data| on_save_preset(
+        &ui_weak, data
+    )));
 
-    state_bridge.on_open_build_folder_requested(clone!((ui_weak, core), move || {
-        on_open_build_folder(&ui_weak, &core);
+    state_bridge.on_open_build_folder_requested(clone!((ui_weak, core), move |target| {
+        on_open_build_folder(&ui_weak, &core, &target);
     }));
 
     state_bridge.on_select_build_folder_requested(clone!((ui_weak, core), move || {
@@ -226,19 +205,19 @@ fn setup_callbacks(
         on_profile_search(&ui_weak, &core, &query);
     }));
 
-    state_bridge.on_profile_search_key_pressed(clone!((ui_weak), move |event| {
-        on_profile_search_key_pressed(&ui_weak, &event.text)
+    state_bridge.on_profile_search_key_pressed(clone!((ui_weak), move |data| {
+        on_profile_search_key_pressed(&ui_weak, data)
     }));
 
     state_bridge.on_profile_selected(clone!(
         (ui_weak, core, cache, get_image_builder),
-        move |name| {
-            on_profile_selected(&ui_weak, &core, &cache, &get_image_builder, &name);
+        move |data| {
+            on_profile_selected(&ui_weak, &core, &cache, &get_image_builder, &data);
         }
     ));
 
-    state_bridge.on_show_rcs_toggled(clone!((ui_weak, core), move |show_rcs| {
-        on_show_rcs_toggled(&ui_weak, &core, show_rcs);
+    state_bridge.on_show_rcs_toggled(clone!((ui_weak, core), move |data| {
+        on_show_rcs_toggled(&ui_weak, &core, data);
     }));
 
     state_bridge.on_version_changed(clone!((ui_weak, core, client), move |version| {
@@ -256,21 +235,16 @@ fn on_build(
     ui_weak: &slint::Weak<AppWindow>,
     core: &SharedCore,
     get_image_builder: &GetImageBuilderFn,
+    data: &BuildData,
 ) {
-    let Some(ui) = ui_weak.upgrade() else {
-        eprintln!("Error: UI handle lost during build request.");
-        return;
-    };
-    let s = ui.get_state();
-
-    let version = Version::from(s.selected_version.to_string());
-    let target = Target::from(s.selected_target.to_string());
-    let profile_id = ProfileId::from(s.selected_id.to_string());
+    let version = Version::from(data.version.as_str());
+    let target = Target::from(data.target.as_str());
+    let profile_id = ProfileId::from(data.profile_id.as_str());
 
     let packages = {
-        let current_set: HashSet<_> = s.packages_text.split_whitespace().collect();
+        let current_set: HashSet<_> = data.packages.split_whitespace().collect();
         let core = core.read().unwrap();
-        let selected = s.packages_text.to_string();
+        let selected = data.packages.as_str();
         let removed = core
             .packages
             .iter()
@@ -286,15 +260,14 @@ fn on_build(
         format!("{selected} {removed}")
     };
 
-    let extra_image_name = s.extra_image_name_text.to_string();
-    let rootfs_size = s.rootfs_size_value.cast_unsigned();
-    let disabled_services = s.disabled_service_text.to_string();
-    let overlay_path = s.overlay_path_text.to_string();
-
-    let extra_image_name: String = extra_image_name
+    let extra_image_name: String = data
+        .extra_image_name
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '-')
         .collect();
+    let rootfs_size = data.rootfs_size.cast_unsigned();
+    let disabled_services = data.disabled_services.clone();
+    let overlay_path = data.overlay_path.clone();
 
     tokio::spawn(clone!((ui_weak, core, get_image_builder), async move {
         println!("Initializing...");
@@ -413,24 +386,16 @@ fn on_build(
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn on_download(
+fn on_download_builder(
     ui_weak: &slint::Weak<AppWindow>,
     core: &SharedCore,
     cache: &MetadataCache,
     get_image_builder: &GetImageBuilderFn,
+    data: &DownloadBuilderData,
 ) {
-    let (version, target, profile_id) = {
-        let Some(ui) = ui_weak.upgrade() else {
-            eprintln!("Error: UI handle lost during download request.");
-            return;
-        };
-        let s = ui.get_state();
-        (
-            Version::from(s.selected_version.to_string()),
-            Target::from(s.selected_target.to_string()),
-            ProfileId::from(s.selected_id.to_string()),
-        )
-    };
+    let version = Version::from(data.version.as_str());
+    let target = Target::from(data.target.as_str());
+    let profile_id = ProfileId::from(data.profile_id.as_str());
 
     ui_weak.update_state(|s| {
         s.image_exists = false;
@@ -527,14 +492,10 @@ fn on_load_preset(
     core: &SharedCore,
     cache: &MetadataCache,
     get_image_builder: &GetImageBuilderFn,
+    version: &SharedString,
 ) {
-    let version = {
-        let Some(ui) = ui_weak.upgrade() else { return };
-        let s = ui.get_state();
-        Version::from(s.selected_version.to_string())
-    };
-
     ui_weak.switch_state_to(UIState::Idle(None));
+    let version = Version::from(version.as_str());
 
     tokio::spawn(clone!(
         (ui_weak, core, cache, get_image_builder),
@@ -567,7 +528,8 @@ fn on_load_preset(
     ));
 }
 
-fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, preset: Preset) {
+fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, data: BuildData) {
+    let preset = Preset::from(data);
     let filename = if preset.extra_image_name.is_empty() {
         format!("preset-{}.json", preset.profile_id)
     } else {
@@ -601,18 +563,17 @@ fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, preset: Preset) {
     }));
 }
 
-fn on_open_build_folder(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore) {
-    let Some(ui) = ui_weak.upgrade() else {
-        return;
-    };
-    let s = ui.get_state();
-    let target_str = s.selected_target.to_string();
+fn on_open_build_folder(
+    ui_weak: &slint::Weak<AppWindow>,
+    core: &SharedCore,
+    target: &SharedString,
+) {
     let build_folder_path = core
         .read()
         .unwrap()
         .config
         .build_path
-        .join(Target::from(target_str).to_path());
+        .join(Target::from(target.as_str()).to_path());
     tokio::spawn(clone!((ui_weak, build_folder_path), async move {
         open_dir(&ui_weak, &build_folder_path).await;
     }));
@@ -659,37 +620,45 @@ fn on_packages_edited(
 
 fn on_profile_search_key_pressed(
     ui_weak: &slint::Weak<AppWindow>,
-    event_text: &SharedString,
+    data: ProfileSearchKeyData,
 ) -> bool {
     let Some(ui) = ui_weak.upgrade() else {
         return false;
     };
-    let mut s = ui.get_state();
-    let profiles = s.profiles.clone();
-    let count = profiles.row_count();
+    let count = data.profiles.row_count();
     if count == 0 {
         return false;
     }
 
-    let mut current = s.current_highlighted_profile_index;
-    let count: i32 = count.try_into().unwrap();
+    let mut current = data.index;
+    let count_i32: i32 = count.try_into().unwrap();
 
-    if *event_text == <Key as Into<SharedString>>::into(Key::DownArrow) {
-        current = (current + 1) % count;
-        s.current_highlighted_profile_index = current;
-        ui.set_state(s);
+    if data.text == <Key as Into<SharedString>>::into(Key::DownArrow) {
+        current = (current + 1) % count_i32;
+        ui.update_state(move |s| {
+            s.current_highlighted_profile_index = current;
+        });
         true
-    } else if *event_text == <Key as Into<SharedString>>::into(Key::UpArrow) {
-        current = if current <= 0 { count - 1 } else { current - 1 };
-        s.current_highlighted_profile_index = current;
-        ui.set_state(s);
+    } else if data.text == <Key as Into<SharedString>>::into(Key::UpArrow) {
+        current = if current <= 0 {
+            count_i32 - 1
+        } else {
+            current - 1
+        };
+        ui.update_state(move |s| {
+            s.current_highlighted_profile_index = current;
+        });
         true
-    } else if *event_text == <Key as Into<SharedString>>::into(Key::Return) {
-        if let Some(val) = (current >= 0 && current < count)
-            .then(|| profiles.row_data(current.try_into().unwrap()))
+    } else if data.text == <Key as Into<SharedString>>::into(Key::Return) {
+        if let Some(val) = (current >= 0 && current < count_i32)
+            .then(|| data.profiles.row_data(current.try_into().unwrap()))
             .flatten()
         {
-            ui.global::<StateBridge>().invoke_profile_selected(val);
+            ui.global::<StateBridge>()
+                .invoke_profile_selected(ProfileData {
+                    version: data.version,
+                    name: val,
+                });
             return true;
         }
         false
@@ -723,34 +692,30 @@ fn on_profile_selected(
     core: &SharedCore,
     cache: &MetadataCache,
     get_image_builder: &GetImageBuilderFn,
-    name: &SharedString,
+    data: &ProfileData,
 ) {
-    let Some(ui) = ui_weak.upgrade() else {
-        return;
-    };
-
     let profile = {
         let core = core.read().unwrap();
-        core.profiles.find_by_display_name(name)
+        core.profiles.find_by_display_name(&data.name)
     };
 
     let Some(profile) = profile else {
         return;
     };
 
-    let mut s = ui.get_state();
-    s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
-    s.search_text = name.clone();
-    s.selected_id = profile.id.0.as_str().into();
-    s.selected_target = profile.target.to_string().into();
-    s.selected_model = profile.format_all_models().as_str().into();
+    ui_weak.update_state(clone!((data, profile), move |s| {
+        s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
+        s.search_text = data.name;
+        s.selected_id = profile.id.0.as_str().into();
+        s.selected_target = profile.target.to_string().into();
+        s.selected_model = profile.format_all_models().as_str().into();
 
-    s.switch_to(UIState::FetchingPackages);
+        s.switch_to(UIState::FetchingPackages);
+    }));
 
     let profile_id = profile.id.clone();
     let target = profile.target.clone();
-    let version = Version::from(s.selected_version.to_string());
-    ui.set_state(s);
+    let version = Version::from(data.version.as_str());
 
     tokio::spawn(clone!(
         (
@@ -790,15 +755,14 @@ fn on_profile_selected(
     ));
 }
 
-fn on_show_rcs_toggled(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore, show_rcs: bool) {
+fn on_show_rcs_toggled(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore, data: ShowRcsData) {
     let core = core.read().unwrap();
-    let Some(ui) = ui_weak.upgrade() else { return };
-    let filtered = filter_versions(&core.versions, show_rcs);
+    let filtered = filter_versions(&core.versions, data.show_rcs);
 
-    ui.update_state(|s| {
+    ui_weak.update_state(move |s| {
         s.versions = Rc::new(VecModel::from(filtered)).into();
 
-        if !show_rcs && s.selected_version.contains("-rc") {
+        if !data.show_rcs && data.version.contains("-rc") {
             s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
             s.search_text = "".into();
             s.selected_version = SharedString::new();
@@ -813,7 +777,7 @@ fn on_version_changed(
     client: &OpenWrtClient,
     version: &SharedString,
 ) {
-    let version = Version::from(version.to_string());
+    let version = Version::from(version.as_str());
     ui_weak.switch_state_to(UIState::LoadingProfiles(version.clone()));
     tokio::spawn(clone!((ui_weak, client, core, version), async move {
         if let Ok(profiles) = client.fetch_profiles(&version).await {
@@ -1116,7 +1080,7 @@ async fn load_preset_from_path(
 
     ui_weak.upgrade_in_event_loop(clone!((original_pkgs, core, version), move |ui| {
         let mut s = ui.get_state();
-        s.disabled_service_text = preset.disabled_services.into();
+        s.disabled_services_text = preset.disabled_services.into();
         s.extra_image_name_text = preset.extra_image_name.into();
         s.overlay_path_text = preset.overlay_path.to_string_lossy().as_ref().into();
         s.packages_text = preset.packages.into();

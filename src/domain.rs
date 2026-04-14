@@ -9,6 +9,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::BuildData;
+
 #[derive(Clone)]
 pub struct ImageTag(pub String);
 
@@ -58,6 +60,21 @@ pub struct Preset {
     pub disabled_services: String,
     #[serde(skip_serializing_if = "is_path_empty", default)]
     pub overlay_path: PathBuf,
+}
+
+impl From<BuildData> for Preset {
+    fn from(data: BuildData) -> Self {
+        Self {
+            release_series: data.version.as_str().into(),
+            target: data.target.as_str().into(),
+            profile_id: data.profile_id.as_str().into(),
+            extra_image_name: data.extra_image_name.into(),
+            rootfs_size: data.rootfs_size.cast_unsigned(),
+            packages: data.packages.into(),
+            disabled_services: data.disabled_services.into(),
+            overlay_path: data.overlay_path.as_str().into(),
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

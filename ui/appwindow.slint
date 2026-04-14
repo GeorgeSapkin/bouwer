@@ -31,7 +31,7 @@ export struct AppState {
     build_path_text: string,
     busy: bool,
     current_highlighted_profile_index: int,
-    disabled_service_text: string,
+    disabled_services_text: string,
     extra_image_name_text: string,
     image_exists: bool,
     notification: string,
@@ -58,25 +58,59 @@ export struct AppState {
     versions: [string],
 }
 
+export struct BuildData {
+    version: string,
+    target: string,
+    profile_id: string,
+    extra_image_name: string,
+    rootfs_size: int,
+    packages: string,
+    disabled_services: string,
+    overlay_path: string,
+}
+
+export struct DownloadBuilderData {
+    version: string,
+    target: string,
+    profile_id: string,
+}
+
+export struct ProfileData {
+    version: string,
+    name: string,
+}
+
+export struct ProfileSearchKeyData {
+    text: string,
+    index: int,
+    profiles: [string],
+    version: string,
+}
+
+export struct ShowRcsData {
+    version: string,
+    show_rcs: bool,
+}
+
 export global StateBridge {
     in-out property <AppState> state: {
         current_highlighted_profile_index: -1,
     };
 
     callback build_path_edited(string);
-    callback build_requested(string);
-    callback download_requested();
-    callback load_preset_requested();
-    callback open_build_folder_requested();
+    callback build_requested(BuildData);
+    callback download_builder_requested(DownloadBuilderData);
+    callback load_preset_requested(string);
+    callback open_build_folder_requested(string);
     callback open_github_link();
     callback packages_edited(string);
     callback profile_search_edited(string);
-    callback profile_search_key_pressed(KeyEvent) -> bool;
-    callback profile_selected(string);
-    callback save_preset_requested(string, string, string, int, string, string, string);
+    callback profile_search_key_pressed(ProfileSearchKeyData) -> bool;
+    callback profile_selected(ProfileData);
+    callback save_preset_requested(BuildData);
     callback select_build_folder_requested();
     callback select_overlay_folder_requested();
-    callback show_rcs_toggled(bool);
+    callback show_rcs_toggled(ShowRcsData);
     callback version_changed(string);
 }
 
@@ -137,7 +171,10 @@ export component AppWindow inherits Window {
                 enabled: !root.state.busy;
                 checked <=> StateBridge.state.show_rcs;
                 toggled => {
-                    StateBridge.show_rcs_toggled(self.checked);
+                    StateBridge.show_rcs_toggled({
+                        show_rcs: self.checked,
+                        version: root.state.selected_version,
+                    });
                 }
             }
 
@@ -192,10 +229,18 @@ export component AppWindow inherits Window {
                     StateBridge.profile_search_edited(text);
                 }
                 key_pressed(event) => {
-                    return StateBridge.profile_search_key_pressed(event);
+                    return StateBridge.profile_search_key_pressed({
+                        text: event.text,
+                        index: root.state.current_highlighted_profile_index,
+                        profiles: root.state.profiles,
+                        version: root.state.selected_version,
+                    });
                 }
                 selected(item) => {
-                    StateBridge.profile_selected(item);
+                    StateBridge.profile_selected({
+                        version: root.state.selected_version,
+                        name: item,
+                    });
                 }
             }
         }
@@ -211,7 +256,11 @@ export component AppWindow inherits Window {
                 enabled: !root.state.busy && root.state.selected_id != "" && !root.state.image_exists;
                 primary: root.state.selected_id != "" && !root.state.image_exists;
                 clicked => {
-                    StateBridge.download_requested();
+                    StateBridge.download_builder_requested({
+                        version: root.state.selected_version,
+                        target: root.state.selected_target,
+                        profile_id: root.state.selected_id,
+                    });
                 }
             }
 
@@ -219,7 +268,7 @@ export component AppWindow inherits Window {
                 text: "Load preset";
                 enabled: !root.state.busy && !root.state.profiles_fetch_failed;
                 clicked => {
-                    StateBridge.load_preset_requested();
+                    StateBridge.load_preset_requested(root.state.selected_version);
                 }
             }
 
@@ -227,15 +276,16 @@ export component AppWindow inherits Window {
                 text: "Save preset";
                 enabled: !root.state.busy && root.state.image_exists && !root.state.profiles_fetch_failed;
                 clicked => {
-                    StateBridge.save_preset_requested(
-                        root.state.selected_target,
-                        root.state.selected_id,
-                        root.state.extra_image_name_text,
-                        root.state.rootfs_size_value,
-                        root.state.packages_text,
-                        root.state.disabled_service_text,
-                        root.state.overlay_path_text,
-                    );
+                    StateBridge.save_preset_requested({
+                        version: root.state.selected_version,
+                        target: root.state.selected_target,
+                        profile_id: root.state.selected_id,
+                        extra_image_name: root.state.extra_image_name_text,
+                        rootfs_size: root.state.rootfs_size_text.to-float(),
+                        packages: root.state.packages_text,
+                        disabled_services: root.state.disabled_services_text,
+                        overlay_path: root.state.overlay_path_text,
+                    });
                 }
             }
         }
@@ -438,10 +488,6 @@ export component AppWindow inherits Window {
                             enabled: !root.state.busy && root.state.image_exists;
                             input-type: InputType.number;
                             placeholder_text: "default";
-                            edited(t) => {
-                                // There's no to-int or to-number atm
-                                root.state.rootfs_size_value = t.to-float();
-                            }
                         }
                     }
 
@@ -469,8 +515,8 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    disabled_service_text := TextEdit {
-                        text <=> StateBridge.state.disabled_service_text;
+                    disabled_services_text := TextEdit {
+                        text <=> StateBridge.state.disabled_services_text;
                         enabled: !root.state.busy && root.state.image_exists;
                         min-height: 60px;
                         placeholder-text: "none";
@@ -580,7 +626,7 @@ export component AppWindow inherits Window {
                 text: "Open build folder";
                 enabled: !root.state.busy && root.state.image_exists;
                 clicked => {
-                    StateBridge.open_build_folder_requested();
+                    StateBridge.open_build_folder_requested(root.state.selected_target);
                 }
             }
 
@@ -589,7 +635,16 @@ export component AppWindow inherits Window {
                 primary: true;
                 enabled: !root.state.busy && root.state.image_exists && root.state.packages_text != "";
                 clicked => {
-                    StateBridge.build_requested(root.state.packages_text);
+                    StateBridge.build_requested({
+                        version: root.state.selected_version,
+                        target: root.state.selected_target,
+                        profile_id: root.state.selected_id,
+                        extra_image_name: root.state.extra_image_name_text,
+                        rootfs_size: root.state.rootfs_size_text.to-float(),
+                        packages: root.state.packages_text,
+                        disabled_services: root.state.disabled_services_text,
+                        overlay_path: root.state.overlay_path_text,
+                    });
                 }
             }
         }
