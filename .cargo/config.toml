@@ -1,0 +1,4 @@
+# Strip symbols when cross compiling for Windows from Linux, otherwise Windows
+# refuses to recognize the binary
+[target.'cfg(all(target_os = "windows", target_env = "gnu"))']
+rustflags = ["-C", "link-arg=-s"]
