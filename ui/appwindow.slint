@@ -216,11 +216,11 @@ export component AppWindow inherits Window {
                 }
 
                 Image {
-                    source: @image-url("../assets/logo.svg");
-                    width: 24px;
-                    height: 24px;
+                    source: @image-url("../assets/logo_no_frame.svg");
+                    colorize: Palette.control-foreground;
+                    width: 22px;
+                    height: 22px;
                     horizontal-alignment: center;
-                    image-rendering: pixelated;
                 }
 
                 about_touch := TouchArea {
