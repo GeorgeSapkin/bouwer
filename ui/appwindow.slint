@@ -113,7 +113,6 @@ export global StateBridge {
     callback download_builder_requested(DownloadBuilderData);
     callback load_preset_requested(string);
     callback open_build_folder_requested(string);
-    callback open_github_link();
     callback packages_edited(string);
     callback profile_search_edited(string);
     callback profile_search_key_pressed(ProfileSearchKeyData) -> bool;
@@ -159,10 +158,6 @@ export component AppWindow inherits Window {
         show <=> StateBridge.state.show_about;
         version: root.state.version;
         z: 1000;
-
-        open_github_link => {
-            StateBridge.open_github_link();
-        }
     }
 
     Notification {

@@ -43,7 +43,6 @@ use state::{AppWindowExt, AppWindowWeakExt, Notification, UIState};
 
 slint::include_modules!();
 
-const ABOUT_URL: &str = "https://github.com/georgesapkin/bouwer";
 const BASE_URL: &str = "https://downloads.openwrt.org";
 const EXTRA_PACKAGES: &str = "luci luci-app-attendedsysupgrade";
 const IMAGE_NAME: &str = "openwrt/imagebuilder";
@@ -237,12 +236,6 @@ fn setup_callbacks(
     state_bridge.on_update_build_preview(clone!((ui_weak, core), move |data| {
         on_update_build_preview(&ui_weak, &core, &data);
     }));
-
-    state_bridge.on_open_github_link(|| {
-        if let Err(e) = webbrowser::open(ABOUT_URL) {
-            eprintln!("Failed to open GitHub link: {e}");
-        }
-    });
 
     ui.window().on_close_requested(clone!((ui_weak), move || {
         let Some(ui) = ui_weak.upgrade() else {

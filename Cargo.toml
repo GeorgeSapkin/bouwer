@@ -27,7 +27,6 @@ tokio = { version = "1", features = [
     "time",
 ] }
 ureq = { version = "3", features = ["json"] }
-webbrowser = { version = "1.2.0", features = ["disable-wsl", "hardened"]}
 
 # Native Linux or Windows
 [target.'cfg(any(target_os = "linux", target_env = "msvc"))'.dependencies]

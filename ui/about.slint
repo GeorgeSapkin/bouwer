@@ -9,8 +9,6 @@ export component AboutDialog inherits Rectangle {
 
     in-out property <bool> show;
 
-    callback open_github_link();
-
     property <float> open-progress: show ? 1.0 : 0.0;
 
     visible: open-progress > 0.01;
@@ -111,7 +109,7 @@ export component AboutDialog inherits Rectangle {
                     link_touch := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
-                            root.open_github_link();
+                            Platform.open-url("https://github.com/georgesapkin/bouwer");
                         }
                         Text {
                             text: "github.com/georgesapkin/bouwer";
