@@ -394,8 +394,7 @@ fn on_delete_builder(
     get_image_builder: &GetImageBuilderFn,
     data: &DeleteBuilderData,
 ) {
-    let tag = data.tag.clone();
-    println!("Deleting image builder {tag}");
+    println!("Deleting image builder {}", data.tag);
     ui_weak.switch_state_to(UIState::Idle(Some("Deleting image builder".into())));
     tokio::spawn(clone!((ui_weak, data, get_image_builder), async move {
         let Ok(containers) = Containers::new() else {
@@ -405,8 +404,8 @@ fn on_delete_builder(
 
         match containers.remove_image(data.tag.as_str()).await {
             Ok(()) => {
-                let tag = ImageTag(data.tag.to_string());
-                let msg = match (Target::try_from(&tag), Version::try_from(&tag)) {
+                let image_tag = ImageTag(data.tag.to_string());
+                let msg = match (Target::try_from(&image_tag), Version::try_from(&image_tag)) {
                     (Ok(target), Ok(version)) => {
                         format!("Image builder for {version} {target} deleted.")
                     }
@@ -920,13 +919,9 @@ fn init<F, Fut>(
             s.switch_to(UIState::LoadingProfiles(first_version));
         }));
 
-        let profiles_res = client.fetch_profiles(&first_version).await;
-        match profiles_res {
-            Ok(profiles) => {
-                if let Ok(mut c) = core.write() {
-                    c.profiles = profiles;
-                }
-            }
+        let profiles = client.fetch_profiles(&first_version).await;
+        match profiles {
+            Ok(profiles) if let Ok(mut c) = core.write() => c.profiles = profiles,
             Err(e) => {
                 let msg = format!("Initial load error: {e}");
                 ui_weak.update_state(move |s| {
@@ -936,6 +931,7 @@ fn init<F, Fut>(
                 });
                 return;
             }
+            _ => {}
         }
 
         // Always set busy to false and clear profiles at the end of the initial
@@ -1255,36 +1251,34 @@ async fn open_dir(ui_weak: &slint::Weak<AppWindow>, path: &Path) {
         return;
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        eprintln!("Attempting to open folder: {}", path.display());
-        let status = Command::new("xdg-open")
-            .arg(path.as_os_str())
-            .status()
-            .await;
-        handle_open_result(ui_weak, path, &status);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        eprintln!("Attempting to open folder: {}", path.display());
-        let status = Command::new("open").arg(path.as_os_str()).status().await;
-        handle_open_result(ui_weak, path, &status);
-    }
-    #[cfg(target_os = "windows")]
-    {
-        eprintln!("Attempting to open folder: {}", path.display());
-        let _ = Command::new("explorer")
-            .arg(path.as_os_str())
-            .status()
-            .await;
-        // Explorer seems to return failure sometimes even when it opens a
-        // folder successfully
-        // handle_open_result(ui_weak, Path::new(&path_str), &status);
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        let msg = "Opening file explorer is not supported on this OS.";
-        ui_weak.set_notification(Notification::Error, Some(&msg));
+    cfg_select! {
+        target_os = "linux" => {
+            eprintln!("Attempting to open folder: {}", path.display());
+            let status = Command::new("xdg-open")
+                .arg(path.as_os_str())
+                .status()
+                .await;
+            handle_open_result(ui_weak, path, &status);
+        }
+        target_os = "macos" => {
+            eprintln!("Attempting to open folder: {}", path.display());
+            let status = Command::new("open").arg(path.as_os_str()).status().await;
+            handle_open_result(ui_weak, path, &status);
+        }
+        target_os = "windows" => {
+            eprintln!("Attempting to open folder: {}", path.display());
+            let _ = Command::new("explorer")
+                .arg(path.as_os_str())
+                .status()
+                .await;
+            // Explorer seems to return failure sometimes even when it opens a
+            // folder successfully
+            // handle_open_result(ui_weak, Path::new(&path_str), &status);
+        }
+        _ => {
+            let msg = "Opening file explorer is not supported on this OS.";
+            ui_weak.set_notification(Notification::Error, Some(&msg));
+        }
     }
 }
 

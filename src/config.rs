@@ -17,22 +17,15 @@ impl Default for Config {
     fn default() -> Self {
         let build_path = std::env::temp_dir().join("bouwer");
         let cache_path = if let Some(_path) = home_dir() {
-            #[cfg(target_os = "macos")]
-            {
-                _path.join("Library").join("Caches").join("bouwer")
-            }
-            #[cfg(target_os = "windows")]
-            {
-                std::env::var_os("LOCALAPPDATA")
+            cfg_select! {
+                target_os = "macos" => _path.join("Library").join("Caches").join("bouwer"),
+                target_os = "windows" => std::env::var_os("LOCALAPPDATA")
                     .map_or_else(|| build_path.clone(), PathBuf::from)
                     .join("bouwer")
-                    .join("cache")
-            }
-            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-            {
-                std::env::var_os("XDG_CACHE_HOME")
+                    .join("cache"),
+                _ => std::env::var_os("XDG_CACHE_HOME")
                     .map_or_else(|| _path.join(".cache"), PathBuf::from)
-                    .join("bouwer")
+                    .join("bouwer"),
             }
         } else {
             build_path.join("cache")
@@ -75,20 +68,15 @@ impl Config {
     fn config_file_path() -> PathBuf {
         let mut path = if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
             PathBuf::from(config_home)
-        } else if let Some(home) = home_dir() {
-            #[cfg(target_os = "macos")]
-            {
-                home.join("Library").join("Application Support")
-            }
-            #[cfg(target_os = "windows")]
-            {
-                std::env::var_os("APPDATA")
-                    .map(PathBuf::from)
-                    .unwrap_or(home)
-            }
-            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-            {
-                home.join(".config")
+        } else if let Some(path) = home_dir() {
+            cfg_select! {
+                target_os = "macos" => path.join("Library").join("Application Support"),
+                target_os = "windows" => {
+                    std::env::var_os("APPDATA")
+                        .map(PathBuf::from)
+                        .unwrap_or(path)
+                },
+                _ => path.join(".config")
             }
         } else {
             std::env::temp_dir()
@@ -101,12 +89,8 @@ impl Config {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    #[cfg(not(windows))]
-    {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
-    #[cfg(windows)]
-    {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
+    cfg_select! {
+        windows => std::env::var_os("USERPROFILE").map(PathBuf::from),
+        _ => std::env::var_os("HOME").map(PathBuf::from),
     }
 }

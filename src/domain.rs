@@ -420,13 +420,8 @@ where
 
     match U32OrString::deserialize(deserializer)? {
         U32OrString::U32(v) => Ok(v),
-        U32OrString::String(s) => {
-            if s.is_empty() {
-                Ok(0)
-            } else {
-                s.parse::<u32>().map_err(serde::de::Error::custom)
-            }
-        }
+        U32OrString::String(s) if s.is_empty() => Ok(0),
+        U32OrString::String(s) => s.parse::<u32>().map_err(serde::de::Error::custom),
     }
 }
 

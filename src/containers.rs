@@ -102,34 +102,33 @@ impl Containers {
         {
             Docker::connect_with_host(&host)?
         } else {
-            #[cfg(unix)]
-            {
-                // Check for rootless Podman socket
-                let socket = env::var("XDG_RUNTIME_DIR").map_or_else(
-                    |_| "/run/podman/podman.sock".to_string(),
-                    |rt| format!("{rt}/podman/podman.sock"),
-                );
+            cfg_select! {
+                unix => {
+                    // Check for rootless Podman socket
+                    let socket = env::var("XDG_RUNTIME_DIR").map_or_else(
+                        |_| "/run/podman/podman.sock".to_string(),
+                        |rt| format!("{rt}/podman/podman.sock"),
+                    );
 
-                if Path::new(&socket).exists() {
-                    Docker::connect_with_socket(&socket, 120, bollard::API_DEFAULT_VERSION)?
-                } else {
-                    // Fallback to defaults
-                    Docker::connect_with_local_defaults()?
+                    if Path::new(&socket).exists() {
+                        Docker::connect_with_socket(&socket, 120, bollard::API_DEFAULT_VERSION)?
+                    } else {
+                        // Fallback to defaults
+                        Docker::connect_with_local_defaults()?
+                    }
                 }
-            }
-            #[cfg(windows)]
-            {
-                // Check for Podman default named pipe
-                let podman_pipe = r"\\.\pipe\podman-machine-default";
-                if Path::new(podman_pipe).exists() {
-                    Docker::connect_with_named_pipe(podman_pipe, 120, bollard::API_DEFAULT_VERSION)?
-                } else {
-                    // Fallback to defaults
-                    Docker::connect_with_local_defaults()?
+                windows => {
+                    // Check for Podman default named pipe
+                    let podman_pipe = r"\\.\pipe\podman-machine-default";
+                    if Path::new(podman_pipe).exists() {
+                        Docker::connect_with_named_pipe(podman_pipe, 120, bollard::API_DEFAULT_VERSION)?
+                    } else {
+                        // Fallback to defaults
+                        Docker::connect_with_local_defaults()?
+                    }
                 }
+                _ => Docker::connect_with_local_defaults()?
             }
-            #[cfg(not(any(unix, windows)))]
-            Docker::connect_with_local_defaults()?
         };
 
         Ok(Self {
