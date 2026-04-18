@@ -1,0 +1,44 @@
+{
+  "release": "25.12.2",
+  "profiles": [
+    {
+      "id": "zyxel_ex5601-t0-ubootmod",
+      "titles": [
+        {
+          "model": "EX5601-T0",
+          "variant": "(OpenWrt U-Boot layout)",
+          "vendor": "Zyxel"
+        },
+        {
+          "model": "EX5601-T1",
+          "vendor": "Zyxel"
+        },
+        {
+          "model": "T-56",
+          "vendor": "Zyxel"
+        }
+      ],
+      "target": "mediatek/filogic"
+    },
+    {
+      "id": "tplink_archer-c7-v2",
+      "titles": [
+        {
+          "model": "Archer C7",
+          "variant": "v2",
+          "vendor": "TP-Link"
+        }
+      ],
+      "target": "ath79/generic"
+    },
+    {
+      "id": "generic",
+      "titles": [
+        {
+          "title": "Generic EFI Boot"
+        }
+      ],
+      "target": "armsr/armv8"
+    }
+  ]
+}

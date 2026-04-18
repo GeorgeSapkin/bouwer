@@ -43,7 +43,7 @@ pub struct OpenWrtVersions {
     pub versions_list: Vec<Version>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Preset {
     pub release_series: ReleaseSeries,
     pub target: Target,
@@ -78,7 +78,7 @@ impl From<BuildData> for Preset {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct ProfileId(pub String);
 
@@ -100,7 +100,7 @@ impl From<String> for ProfileId {
     }
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Profile {
     pub id: ProfileId,
     pub titles: Vec<ProfileTitle>,
@@ -155,7 +155,7 @@ impl ProfileSliceExt for [Profile] {
     }
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProfileTitle {
     pub model: Option<String>,
     pub vendor: Option<String>,
@@ -182,7 +182,7 @@ impl Display for ProfileTitle {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(from = "String", into = "String")]
 pub struct ReleaseSeries {
     pub major: u8,
@@ -237,7 +237,7 @@ impl From<&Version> for ReleaseSeries {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(from = "String", into = "String")]
 pub struct Target {
     pub target: String,
@@ -307,7 +307,7 @@ impl TryFrom<&ImageTag> for Target {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(from = "String")]
 pub struct Version {
     pub major: u8,
@@ -432,4 +432,266 @@ fn is_path_empty(p: &Path) -> bool {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero(v: &u32) -> bool {
     *v == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version_parsing_and_display() {
+        let cases = [
+            ("23.05.2", 23, 5, 2, None),
+            ("23.05.0-rc3", 23, 5, 0, Some(3)),
+            ("21.02.0-rc1", 21, 2, 0, Some(1)),
+            ("25.12.0-rc12", 25, 12, 0, Some(12)),
+            ("19.07.10", 19, 7, 10, None),
+            ("0.00.0", 0, 0, 0, None),
+        ];
+
+        for (input, major, minor, patch, rc) in cases {
+            let v = Version::from(input);
+            assert_eq!(v.major, major);
+            assert_eq!(v.minor, minor);
+            assert_eq!(v.patch, patch);
+            assert_eq!(v.rc, rc);
+            assert_eq!(v.to_string(), input);
+        }
+    }
+
+    #[test]
+    fn test_version_ordering() {
+        let v1 = Version::from("23.05.0-rc1");
+        let v2 = Version::from("23.05.0-rc2");
+        let v3 = Version::from("23.05.0");
+        let v4 = Version::from("23.05.1");
+        let v5 = Version::from("24.10.0");
+
+        assert!(v1 < v2);
+        assert!(v2 < v3);
+        assert!(v3 < v4);
+        assert!(v4 < v5);
+    }
+
+    #[test]
+    fn test_target_logic() {
+        let t = Target::from("ath79/generic");
+        assert_eq!(t.target, "ath79");
+        assert_eq!(t.subtarget, "generic");
+        assert_eq!(t.to_slug(), "ath79-generic");
+        assert_eq!(t.to_path(), PathBuf::from("ath79").join("generic"));
+
+        let t2 = Target::from("realtek/rtl931x_nand");
+        assert_eq!(t2.to_slug(), "realtek-rtl931x_nand");
+    }
+
+    #[test]
+    fn test_image_tag_conversions() {
+        let tag = ImageTag("openwrt/imagebuilder:ramips-mt7621-23.05.2".to_string());
+        let t = Target::try_from(&tag).expect("Failed to parse target from tag");
+        let v = Version::try_from(&tag).expect("Failed to parse version from tag");
+        assert_eq!(t.to_string(), "ramips/mt7621");
+        assert_eq!(v.to_string(), "23.05.2");
+
+        let tag = ImageTag("base:x86-64-21.02.0-rc1".to_string());
+        let t = Target::try_from(&tag).unwrap();
+        let v = Version::try_from(&tag).unwrap();
+        assert_eq!(t.to_string(), "x86/64");
+        assert_eq!(v.to_string(), "21.02.0-rc1");
+    }
+
+    #[test]
+    fn test_profile_title_formatting() {
+        let pt1 = ProfileTitle {
+            model: Some("C200".into()),
+            vendor: Some("Ctera".into()),
+            variant: Some("V1".into()),
+            title: None,
+        };
+        assert_eq!(pt1.to_string(), "Ctera C200 V1");
+
+        let pt2 = ProfileTitle {
+            model: Some("LoongArch64".into()),
+            vendor: Some("Generic".into()),
+            variant: None,
+            title: None,
+        };
+        assert_eq!(pt2.to_string(), "Generic LoongArch64");
+
+        let pt3 = ProfileTitle {
+            model: None,
+            vendor: None,
+            variant: None,
+            title: Some("Generic EFI Boot".into()),
+        };
+        assert_eq!(pt3.to_string(), "Generic EFI Boot");
+    }
+
+    #[test]
+    fn test_profile_filtering() {
+        let profiles = [
+            Profile {
+                id: ProfileId("zyxel_ex5601-t0-ubootmod".into()),
+                titles: vec![ProfileTitle {
+                    model: Some("EX5601-T0".into()),
+                    vendor: Some("Zyxel".into()),
+                    variant: Some("(OpenWrt U-Boot layout)".into()),
+                    title: None,
+                }],
+                target: Target::from("mediatek/filogic"),
+            },
+            Profile {
+                id: ProfileId("generic".into()),
+                titles: vec![ProfileTitle {
+                    model: Some("x86/64".into()),
+                    vendor: Some("Generic".into()),
+                    variant: None,
+                    title: Some("Generic thing".into()),
+                }],
+                target: Target::from("x86/64"),
+            },
+        ];
+
+        // Match by ID
+        assert_eq!(profiles.filter("ex5601-t0-ubootmod").len(), 1);
+        // Match by title
+        assert_eq!(profiles.filter("generic thing").len(), 1);
+        // Normalized case matching
+        assert_eq!(profiles.filter("EX5601-T0").len(), 1);
+        assert_eq!(profiles.filter("nomatch").len(), 0);
+
+        let display_name = "Zyxel EX5601-T0 (OpenWrt U-Boot layout) (zyxel_ex5601-t0-ubootmod)";
+        let found = profiles.find_by_display_name(display_name);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id.0, "zyxel_ex5601-t0-ubootmod");
+    }
+
+    #[test]
+    fn test_release_series_parsing() {
+        let rs = ReleaseSeries::from("23.05.2");
+        assert_eq!(rs.major, 23);
+        assert_eq!(rs.minor, 5);
+        assert_eq!(rs.to_string(), "23.05");
+
+        let rs_rc = ReleaseSeries::from("25.12.0-rc5");
+        assert_eq!(rs_rc.major, 25);
+        assert_eq!(rs_rc.minor, 12);
+    }
+
+    #[test]
+    fn test_preset_serialization() {
+        let preset = Preset {
+            release_series: ReleaseSeries {
+                major: 23,
+                minor: 5,
+            },
+            target: Target::from("ath79/generic"),
+            profile_id: ProfileId("id".into()),
+            extra_image_name: "openssl".into(),
+            rootfs_size: 5000,
+            packages: "luci".into(),
+            disabled_services: "dnsmasq".into(),
+            overlay_path: "/path/to/overlay".into(),
+        };
+
+        let json = serde_json::to_string(&preset).unwrap();
+        assert!(json.contains("\"release_series\":\"23.05\""));
+        assert!(json.contains("\"extra_image_name\":\"openssl\""));
+        assert!(json.contains("\"packages\":\"luci\""));
+        assert!(json.contains("\"rootfs_size\":5000"));
+
+        let deserialized: Preset = serde_json::from_str(&json).unwrap();
+        assert_eq!(preset, deserialized);
+    }
+
+    #[test]
+    fn test_preset_serialization_skips() {
+        let preset = Preset {
+            release_series: ReleaseSeries {
+                major: 23,
+                minor: 5,
+            },
+            target: Target::from("ath79/generic"),
+            profile_id: ProfileId("id".into()),
+            extra_image_name: String::new(),
+            rootfs_size: 0,
+            packages: "luci".into(),
+            disabled_services: String::new(),
+            overlay_path: PathBuf::new(),
+        };
+
+        let json = serde_json::to_string(&preset).unwrap();
+        assert!(json.contains("\"release_series\":\"23.05\""));
+        assert!(json.contains("\"packages\":\"luci\""));
+
+        assert!(!json.contains("extra_image_name"));
+        assert!(!json.contains("disabled_services"));
+        assert!(!json.contains("overlay_path"));
+        assert!(!json.contains("rootfs_size"));
+
+        let deserialized: Preset = serde_json::from_str(&json).unwrap();
+        assert_eq!(preset, deserialized);
+    }
+
+    #[test]
+    fn test_version_deserialization() {
+        let versions_json = include_str!("../tests/versions.json");
+        let versions: OpenWrtVersions =
+            serde_json::from_str(versions_json).expect("Failed to deserialize versions fixture");
+        assert!(!versions.versions_list.is_empty());
+
+        let first = &versions.versions_list[0];
+        assert_eq!(first.to_string(), "25.12.2");
+
+        let rc_version = &versions.versions_list[2];
+        assert_eq!(rc_version.to_string(), "25.12.0-rc5");
+        assert_eq!(rc_version.rc, Some(5));
+    }
+
+    #[test]
+    fn test_overview_deserialization() {
+        let overview_json = include_str!("../tests/overview.json");
+        let overview: OpenWrtOverview =
+            serde_json::from_str(overview_json).expect("Failed to deserialize overview fixture");
+        assert_eq!(overview.profiles.len(), 3);
+
+        let multitle_profile = overview
+            .profiles
+            .iter()
+            .find(|p| p.id.0 == "zyxel_ex5601-t0-ubootmod")
+            .unwrap();
+        assert_eq!(multitle_profile.titles.len(), 3);
+        assert_eq!(
+            multitle_profile.format_all_models(),
+            "Zyxel EX5601-T0 (OpenWrt U-Boot layout) / Zyxel EX5601-T1 / Zyxel T-56"
+        );
+
+        let multitle_profile = overview
+            .profiles
+            .iter()
+            .find(|p| p.id.0 == "generic")
+            .unwrap();
+        assert_eq!(multitle_profile.titles.len(), 1);
+        assert_eq!(multitle_profile.format_all_models(), "Generic EFI Boot");
+    }
+
+    #[test]
+    fn test_deserialize_u32_or_string_logic() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Wrapper {
+            #[serde(deserialize_with = "deserialize_u32_or_string")]
+            val: u32,
+        }
+
+        let cases = [
+            (r#"{"val": 5000}"#, 5000),
+            (r#"{"val": "5000"}"#, 5000),
+            (r#"{"val": ""}"#, 0),
+        ];
+
+        for (json, expected) in cases {
+            let w: Wrapper = serde_json::from_str(json).unwrap();
+            assert_eq!(w.val, expected);
+        }
+    }
 }
