@@ -28,6 +28,9 @@ jobs:
       - name: Enable Rust cache
         uses: swatinem/rust-cache@v2
 
+      - name: Run tests
+        run: cargo test
+
       - name: Build
         run: cargo build --release
         env:
