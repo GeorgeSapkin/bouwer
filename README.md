@@ -3,6 +3,13 @@
 
 <h1 align="center">Bouwer</h1>
 
+<p align="center">
+  <a href="https://github.com/GeorgeSapkin/bouwer/actions/workflows/build.yml?query=branch%3Amain">
+    <img src="https://github.com/georgesapkin/bouwer/actions/workflows/build.yml/badge.svg?branch=main" alt="build status"></a>
+  <a href="https://github.com/GeorgeSapkin/bouwer/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/georgesapkin/bouwer" alt="license"></a>
+</p>
+
 </p>
 
 Bouwer is a simple desktop interface for building customized OpenWrt firmware
