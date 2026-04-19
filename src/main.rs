@@ -70,7 +70,8 @@ pub struct AppCore {
 
 pub type SharedCore = Arc<RwLock<AppCore>>;
 
-type GetImageBuilderFn = Arc<dyn Fn(&Version, &Target) -> ImageBuilder + Send + Sync>;
+type GetImageBuilderFn =
+    Arc<dyn Fn(&Version, &Target) -> anyhow::Result<ImageBuilder> + Send + Sync>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -92,9 +93,20 @@ async fn main() -> anyhow::Result<()> {
 
     let get_image_builder: GetImageBuilderFn = {
         Arc::new(clone!((core), move |version, target| {
-            let containers = Containers::new().unwrap();
-            let build_path = core.read().unwrap().config.build_path.clone();
-            ImageBuilder::new(containers.clone(), IMAGE_NAME, &build_path, version, target)
+            let containers = Containers::new().context("Failed to initialize container engine")?;
+            let build_path = core
+                .read()
+                .expect("Core lock poisoned")
+                .config
+                .build_path
+                .clone();
+            Ok(ImageBuilder::new(
+                containers,
+                IMAGE_NAME,
+                &build_path,
+                version,
+                target,
+            ))
         }))
     };
 
@@ -117,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
     ui.run()?;
 
     core.read()
-        .unwrap()
+        .expect("Core lock poisoned")
         .config
         .save()
         .context("Failed to save configuration")?;
@@ -136,7 +148,7 @@ fn setup_callbacks(
     let state_bridge = ui.global::<StateBridge>();
 
     state_bridge.on_build_path_edited(clone!((core), move |path| {
-        if let Ok(mut c) = core.write() {
+        if let Ok(mut c) = core.write().map_err(|_| eprintln!("Core lock poisoned")) {
             c.config.build_path = path.as_str().into();
         }
     }));
@@ -280,8 +292,12 @@ fn on_build(
             status: Some("Initializing".into()),
         });
 
-        let build_path = core.read().unwrap().config.build_path.clone();
-        let build_folder_path = build_path.join(target.to_path());
+        let build_folder_path = core
+            .read()
+            .expect("Core lock poisoned")
+            .config
+            .build_path
+            .join(target.to_path());
 
         let now = Local::now().format("%Y-%m-%d-%H-%M-%S");
         let filename = format!("build-{version}-{profile_id}-{now}.log");
@@ -298,7 +314,18 @@ fn on_build(
         println!("Disabled services: {disabled_services}\nRequested packages: {packages}");
         println!("Overlay path: {overlay_path}\n");
 
-        let image_builder = get_image_builder(&version, &target);
+        let image_builder = match get_image_builder(&version, &target) {
+            Ok(ib) => ib,
+            Err(e) => {
+                eprintln!("Build failed: {e}");
+                ui_weak.update_state(move |s| {
+                    s.set_notification(Notification::Error, Some("Failed to build firmware"));
+                    s.switch_to(UIState::Error("Build failed".into()));
+                });
+                return;
+            }
+        };
+
         let stream = image_builder
             .build_firmware(
                 &profile_id,
@@ -313,10 +340,9 @@ fn on_build(
         let mut stream = match stream {
             Ok(s) => s,
             Err(e) => {
-                let msg = "Failed to build firmware";
-                eprintln!("{msg}: {e}");
+                eprintln!("Build failed: {e}");
                 ui_weak.update_state(move |s| {
-                    s.set_notification(Notification::Error, Some(msg));
+                    s.set_notification(Notification::Error, Some("Failed to build firmware"));
                     s.switch_to(UIState::Error("Build failed".into()));
                 });
                 return;
@@ -345,12 +371,11 @@ fn on_build(
 
             for l in line.lines() {
                 println!("{l}");
-                AsyncWriteExt::write_all(&mut log_file, l.as_bytes())
-                    .await
-                    .unwrap();
-                AsyncWriteExt::write_all(&mut log_file, b"\n")
-                    .await
-                    .unwrap();
+                if let Err(e) = AsyncWriteExt::write_all(&mut log_file, l.as_bytes()).await {
+                    eprintln!("Failed to write to build log file: {e}");
+                } else {
+                    let _ = AsyncWriteExt::write_all(&mut log_file, b"\n").await;
+                }
 
                 if let Some((new_progress, new_status)) = get_build_status(l) {
                     current_progress = current_progress.max(new_progress);
@@ -378,12 +403,11 @@ fn on_build(
 
         if success {
             println!("Build completed");
-            AsyncWriteExt::write_all(&mut log_file, current_status.as_bytes())
-                .await
-                .unwrap();
+            let _ = AsyncWriteExt::write_all(&mut log_file, current_status.as_bytes()).await;
 
             ui_weak.switch_state_to(UIState::Idle(Some("Build completed".into())));
         } else {
+            eprintln!("Build failed");
             ui_weak.switch_state_to(UIState::Error("Build failed".into()));
         }
     }));
@@ -397,9 +421,16 @@ fn on_delete_builder(
     println!("Deleting image builder {}", data.tag);
     ui_weak.switch_state_to(UIState::Idle(Some("Deleting image builder".into())));
     tokio::spawn(clone!((ui_weak, data, get_image_builder), async move {
-        let Ok(containers) = Containers::new() else {
-            ui_weak.switch_state_to(UIState::Idle(None));
-            return;
+        let containers = match Containers::new() {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = format!("Failed to initialize container engine: {e}");
+                ui_weak.update_state(move |s| {
+                    s.set_notification(Notification::Error, Some(&msg));
+                    s.switch_to(UIState::Idle(None));
+                });
+                return;
+            }
         };
 
         match containers.remove_image(data.tag.as_str()).await {
@@ -455,7 +486,18 @@ fn on_download_builder(
     tokio::spawn(clone!(
         (ui_weak, core, cache, get_image_builder),
         async move {
-            let image_builder = get_image_builder(&version, &target);
+            let image_builder = match get_image_builder(&version, &target) {
+                Ok(ib) => ib,
+                Err(e) => {
+                    let msg = format!("{e}");
+                    ui_weak.update_state(move |s| {
+                        s.set_notification(Notification::Error, Some(&msg));
+                        s.switch_to(UIState::Idle(None));
+                    });
+                    return;
+                }
+            };
+
             let mut stream = image_builder.download();
             let mut current_progress = 0.0f32;
             let mut layers = HashMap::<String, (i64, i64)>::new();
@@ -605,9 +647,16 @@ fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, data: BuildData) {
         };
 
         let path = PathBuf::from(path);
-        let text = serde_json::to_string_pretty(&preset).unwrap();
-        if let Err(e) = std::fs::write(&path, text) {
-            eprintln!("Error saving preset {}: {e}", path.display());
+        match serde_json::to_string_pretty(&preset) {
+            Ok(text) if let Err(e) = std::fs::write(&path, &text) => {
+                let msg = format!("Error saving preset {}: {e}", path.display());
+                ui_weak.set_notification(Notification::Error, Some(&msg));
+            }
+            Err(e) => {
+                let msg = format!("Failed to serialize preset: {e}");
+                ui_weak.set_notification(Notification::Error, Some(&msg));
+            }
+            _ => {}
         }
 
         ui_weak.switch_state_to(UIState::Idle(None));
@@ -621,10 +670,11 @@ fn on_open_build_folder(
 ) {
     let build_folder_path = core
         .read()
-        .unwrap()
+        .expect("Core lock poisoned")
         .config
         .build_path
         .join(Target::from(target.as_str()).to_path());
+
     tokio::spawn(clone!((ui_weak, build_folder_path), async move {
         open_dir(&ui_weak, &build_folder_path).await;
     }));
@@ -640,7 +690,7 @@ fn on_packages_edited(
         s.packages_text = text;
     }));
 
-    let mut handle_lock = debounce_task.write().unwrap();
+    let mut handle_lock = debounce_task.write().expect("Debounce lock poisoned");
     if let Some(h) = handle_lock.take() {
         h.abort();
     }
@@ -650,8 +700,9 @@ fn on_packages_edited(
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         let current_set: HashSet<_> = text.split_whitespace().collect();
-        let core = core.read().unwrap();
-        let removed_str = core
+        let removed_packages = core
+            .read()
+            .expect("Core lock poisoned")
             .packages
             .iter()
             .filter(|p| !current_set.contains(p.as_str()))
@@ -663,9 +714,7 @@ fn on_packages_edited(
                 write!(acc, "{p}").unwrap();
                 acc
             });
-        ui_weak.update_state(|s| {
-            s.removed_packages_text = removed_str.into();
-        });
+        ui_weak.update_state(|s| s.removed_packages_text = removed_packages.into());
 
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             ui.invoke_recalculate_preview();
@@ -686,33 +735,32 @@ fn on_profile_search_key_pressed(
     }
 
     let mut current = data.index;
-    let count_i32: i32 = count.try_into().unwrap();
+    let count: i32 = count.try_into().expect("Profile count exceeds i32");
 
     if data.text == <Key as Into<SharedString>>::into(Key::DownArrow) {
-        current = (current + 1) % count_i32;
+        current = (current + 1) % count;
         ui.update_state(move |s| {
             s.current_highlighted_profile_index = current;
         });
         true
     } else if data.text == <Key as Into<SharedString>>::into(Key::UpArrow) {
-        current = if current <= 0 {
-            count_i32 - 1
-        } else {
-            current - 1
-        };
+        current = if current <= 0 { count - 1 } else { current - 1 };
         ui.update_state(move |s| {
             s.current_highlighted_profile_index = current;
         });
         true
     } else if data.text == <Key as Into<SharedString>>::into(Key::Return) {
-        if let Some(val) = (current >= 0 && current < count_i32)
-            .then(|| data.profiles.row_data(current.try_into().unwrap()))
+        if let Some(name) = (current >= 0 && current < count)
+            .then(|| {
+                data.profiles
+                    .row_data(current.try_into().expect("Invalid index"))
+            })
             .flatten()
         {
             ui.global::<StateBridge>()
                 .invoke_profile_selected(ProfileData {
                     version: data.version,
-                    name: val,
+                    name,
                 });
             return true;
         }
@@ -728,9 +776,10 @@ fn on_profile_search(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore, query:
     s.reset_profile();
     s.current_highlighted_profile_index = -1;
 
-    let core = core.read().unwrap();
     let filtered = if query.chars().count() >= MIN_SEARCH_CHARS {
-        core.profiles
+        core.read()
+            .expect("Core lock poisoned")
+            .profiles
             .filter(query)
             .into_iter()
             .map(SharedString::from)
@@ -749,10 +798,11 @@ fn on_profile_selected(
     get_image_builder: &GetImageBuilderFn,
     data: &ProfileData,
 ) {
-    let profile = {
-        let core = core.read().unwrap();
-        core.profiles.find_by_display_name(&data.name)
-    };
+    let profile = core
+        .read()
+        .expect("Core lock poisoned")
+        .profiles
+        .find_by_display_name(&data.name);
 
     let Some(profile) = profile else {
         return;
@@ -811,8 +861,8 @@ fn on_profile_selected(
 }
 
 fn on_show_rcs_toggled(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore, data: ShowRcsData) {
-    let core = core.read().unwrap();
-    let filtered = filter_versions(&core.versions, data.show_rcs);
+    let versions = &core.read().expect("Core lock poisoned").versions;
+    let filtered = filter_versions(versions, data.show_rcs);
 
     ui_weak.update_state(move |s| {
         s.versions = Rc::new(VecModel::from(filtered)).into();
@@ -896,14 +946,15 @@ fn init<F, Fut>(
             return;
         }
 
-        let versions_res = client.fetch_versions().await;
-        if let Err(e) = versions_res {
-            let msg = format!("Initial load error: {e}");
-            ui_weak.set_notification(Notification::Error, Some(&msg));
-            return;
-        }
+        let versions = match client.fetch_versions().await {
+            Ok(v) => v,
+            Err(e) => {
+                let msg = format!("Initial load error: {e}");
+                ui_weak.set_notification(Notification::Error, Some(&msg));
+                return;
+            }
+        };
 
-        let versions = versions_res.unwrap();
         if let Ok(mut c) = core.write() {
             c.versions.clone_from(&versions);
         }
@@ -1025,7 +1076,7 @@ async fn fetch_packages_for_profile(
 
     println!("Fetching package info for {profile_id} from {version} and {target}");
 
-    let image_builder = get_image_builder(version, target);
+    let image_builder = get_image_builder(version, target)?;
     let result = image_builder.fetch_package_list(profile_id).await?;
 
     cache
@@ -1079,7 +1130,7 @@ fn get_build_command_preview(core: &SharedCore, data: &BuildData) -> String {
 
 fn get_build_packages(core: &SharedCore, selected_packages: &str) -> String {
     let current_set: HashSet<_> = selected_packages.split_whitespace().collect();
-    let core = core.read().unwrap();
+    let core = core.read().expect("Core lock poisoned");
     let removed = core
         .packages
         .iter()
@@ -1130,7 +1181,7 @@ async fn load_preset_from_path(
     let preset: Preset = serde_json::from_str(&content)?;
 
     let found = {
-        let core = core.read().unwrap();
+        let core = core.read().expect("Core lock poisoned");
         core.profiles
             .iter()
             .find(|p| p.id == preset.profile_id && p.target == preset.target)
@@ -1284,8 +1335,13 @@ async fn open_dir(ui_weak: &slint::Weak<AppWindow>, path: &Path) {
 
 #[allow(clippy::cast_precision_loss)]
 async fn refresh_downloaded_builders(ui_weak: slint::Weak<AppWindow>) {
-    let Ok(containers) = Containers::new() else {
-        return;
+    let containers = match Containers::new() {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("Failed to initialize container engine: {e}");
+            ui_weak.set_notification(Notification::Error, Some(&msg));
+            return;
+        }
     };
 
     let Ok(tags) = containers.list_images(IMAGE_NAME).await else {
@@ -1350,7 +1406,18 @@ async fn set_image_exists(
 ) -> bool {
     println!("Checking if image exists: {version} {target}");
 
-    let image_builder = get_image_builder(version, target);
+    let image_builder = match get_image_builder(version, target) {
+        Ok(ib) => ib,
+        Err(e) => {
+            let msg = format!("{e}");
+            ui_weak.update_state(move |s| {
+                s.set_notification(Notification::Error, Some(&msg));
+                s.image_exists = false;
+            });
+            return false;
+        }
+    };
+
     let exists = if wait {
         image_builder.wait_until_ready().await
     } else {
