@@ -33,7 +33,7 @@ mod containers;
 mod domain;
 mod state;
 
-use builder::ImageBuilder;
+use builder::{BuildArgs, ImageBuilder};
 use cache::MetadataCache;
 use client::OpenWrtClient;
 use config::Config;
@@ -327,14 +327,16 @@ fn on_build(
         };
 
         let stream = image_builder
-            .build_firmware(
-                &profile_id,
-                &packages,
-                &extra_image_name,
-                rootfs_size,
-                &disabled_services,
-                (!overlay_path.is_empty()).then(|| Path::new(overlay_path.as_str())),
-            )
+            .build_firmware(BuildArgs {
+                profile_id,
+                packages: &packages,
+                extra_image_name: (!extra_image_name.is_empty())
+                    .then_some(extra_image_name.as_str()),
+                rootfs_size: (rootfs_size > 0).then_some(rootfs_size),
+                disabled_services: (!disabled_services.is_empty())
+                    .then_some(disabled_services.as_str()),
+                overlay_path: (!overlay_path.is_empty()).then_some(overlay_path.as_str()),
+            })
             .await;
 
         let mut stream = match stream {
@@ -1106,15 +1108,18 @@ fn get_build_command_preview(core: &SharedCore, data: &BuildData) -> String {
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '-')
         .collect();
+    let rootfs_size = data.rootfs_size.cast_unsigned();
 
-    let args = ImageBuilder::create_build_args(
-        &profile_id,
-        &packages,
-        &extra_image_name,
-        data.rootfs_size.cast_unsigned(),
-        data.disabled_services.as_str(),
-        !data.overlay_path.is_empty(),
-    );
+    let args: Vec<String> = BuildArgs {
+        profile_id,
+        packages: &packages,
+        extra_image_name: (!extra_image_name.is_empty()).then_some(extra_image_name.as_str()),
+        rootfs_size: (rootfs_size > 0).then_some(rootfs_size),
+        disabled_services: (!data.disabled_services.is_empty())
+            .then_some(data.disabled_services.as_str()),
+        overlay_path: (!data.overlay_path.is_empty()).then_some(data.overlay_path.as_str()),
+    }
+    .into();
 
     if args.len() <= 2 {
         return args.join(" ");

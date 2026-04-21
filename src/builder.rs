@@ -11,6 +11,38 @@ use std::path::{Path, PathBuf};
 use crate::containers::{ContainerGuard, Containers, LogStreamExt, Volume};
 use crate::domain::{ImageTag, ProfileId, Target, Version};
 
+pub struct BuildArgs<'args> {
+    pub profile_id: ProfileId,
+    pub packages: &'args str,
+    pub extra_image_name: Option<&'args str>,
+    pub rootfs_size: Option<u32>,
+    pub disabled_services: Option<&'args str>,
+    pub overlay_path: Option<&'args str>,
+}
+
+impl From<BuildArgs<'_>> for Vec<String> {
+    fn from(args: BuildArgs<'_>) -> Self {
+        let mut cmd = vec![
+            "make".to_string(),
+            "image".to_string(),
+            format!("PROFILE={}", args.profile_id),
+            format!("PACKAGES={}", args.packages),
+        ];
+
+        let optional_vars = [
+            args.extra_image_name
+                .map(|v| format!("EXTRA_IMAGE_NAME={v}")),
+            args.rootfs_size.map(|v| format!("ROOTFS_PARTSIZE={v}")),
+            args.disabled_services
+                .map(|v| format!("DISABLED_SERVICES={v}")),
+            args.overlay_path.map(|_| "FILES=/overlay".to_string()),
+        ];
+
+        cmd.extend(optional_vars.into_iter().flatten());
+        cmd
+    }
+}
+
 pub struct ImageBuilder {
     build_path: PathBuf,
     containers: Containers,
@@ -36,24 +68,10 @@ impl ImageBuilder {
 
     pub async fn build_firmware(
         &self,
-        profile_id: &ProfileId,
-        packages: &str,
-        extra_image_name: &str,
-        rootfs_size: u32,
-        disabled_services: &str,
-        overlay_path: Option<&Path>,
+        args: BuildArgs<'_>,
     ) -> anyhow::Result<ContainerGuard<impl Stream<Item = Result<LogOutput, BollardError>>>> {
-        let cmd = Self::create_build_args(
-            profile_id,
-            packages,
-            extra_image_name,
-            rootfs_size,
-            disabled_services,
-            overlay_path.is_some(),
-        );
-
-        let volumes = self.get_build_volumes(overlay_path);
-        self.containers.run(&self.image_tag, cmd, volumes).await
+        let volumes = self.get_build_volumes(args.overlay_path.map(Path::new));
+        self.containers.run(&self.image_tag, args, volumes).await
     }
 
     pub fn download(&self) -> impl Stream<Item = Result<CreateImageInfo, BollardError>> {
@@ -102,33 +120,6 @@ impl ImageBuilder {
         self.containers.wait_for_image(&self.image_tag, 10).await
     }
 
-    pub fn create_build_args(
-        profile_id: &ProfileId,
-        packages: &str,
-        extra_image_name: &str,
-        rootfs_size: u32,
-        disabled_services: &str,
-        has_overlay: bool,
-    ) -> Vec<String> {
-        let mut args = vec![
-            "make".to_string(),
-            "image".to_string(),
-            format!("PROFILE={profile_id}"),
-            format!("PACKAGES={packages}"),
-        ];
-
-        let optional_vars = [
-            (!extra_image_name.is_empty()).then(|| format!("EXTRA_IMAGE_NAME={extra_image_name}")),
-            (rootfs_size > 0).then(|| format!("ROOTFS_PARTSIZE={rootfs_size}")),
-            (!disabled_services.is_empty())
-                .then(|| format!("DISABLED_SERVICES={disabled_services}")),
-            has_overlay.then(|| "FILES=/overlay".to_string()),
-        ];
-
-        args.extend(optional_vars.into_iter().flatten());
-        args
-    }
-
     fn get_build_volumes(&self, overlay_path: Option<&Path>) -> Vec<Volume> {
         let dl_path = self.build_path.join("dl");
         let mut volumes = vec![
@@ -150,5 +141,60 @@ impl ImageBuilder {
         }
 
         volumes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_args_minimal() {
+        let args = BuildArgs {
+            profile_id: ProfileId("test-profile".to_string()),
+            packages: "pkg1 pkg2",
+            extra_image_name: None,
+            rootfs_size: None,
+            disabled_services: None,
+            overlay_path: None,
+        };
+
+        let cmd: Vec<String> = args.into();
+        assert_eq!(
+            cmd,
+            vec![
+                "make".to_string(),
+                "image".to_string(),
+                "PROFILE=test-profile".to_string(),
+                "PACKAGES=pkg1 pkg2".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_args_full() {
+        let args = BuildArgs {
+            profile_id: ProfileId("test-profile".to_string()),
+            packages: "pkg1 pkg2",
+            extra_image_name: Some("custom-name"),
+            rootfs_size: Some(256),
+            disabled_services: Some("service1 service2"),
+            overlay_path: Some("/path/to/overlay"),
+        };
+
+        let cmd: Vec<String> = args.into();
+        assert_eq!(
+            cmd,
+            vec![
+                "make".to_string(),
+                "image".to_string(),
+                "PROFILE=test-profile".to_string(),
+                "PACKAGES=pkg1 pkg2".to_string(),
+                "EXTRA_IMAGE_NAME=custom-name".to_string(),
+                "ROOTFS_PARTSIZE=256".to_string(),
+                "DISABLED_SERVICES=service1 service2".to_string(),
+                "FILES=/overlay".to_string(),
+            ]
+        );
     }
 }
