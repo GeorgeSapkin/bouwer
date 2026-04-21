@@ -9,11 +9,11 @@ use futures_util::Stream;
 use std::path::{Path, PathBuf};
 
 use crate::containers::{ContainerGuard, Containers, LogStreamExt, Volume};
-use crate::domain::{ImageTag, ProfileId, Target, Version};
+use crate::domain::{ImageTag, PackageList, ProfileId, Target, Version};
 
 pub struct BuildArgs<'args> {
     pub profile_id: ProfileId,
-    pub packages: &'args str,
+    pub packages: PackageList,
     pub extra_image_name: Option<&'args str>,
     pub rootfs_size: Option<u32>,
     pub disabled_services: Option<&'args str>,
@@ -152,7 +152,7 @@ mod tests {
     fn test_build_args_minimal() {
         let args = BuildArgs {
             profile_id: ProfileId("test-profile".to_string()),
-            packages: "pkg1 pkg2",
+            packages: "pkg1 pkg2".into(),
             extra_image_name: None,
             rootfs_size: None,
             disabled_services: None,
@@ -175,7 +175,7 @@ mod tests {
     fn test_build_args_full() {
         let args = BuildArgs {
             profile_id: ProfileId("test-profile".to_string()),
-            packages: "pkg1 pkg2",
+            packages: "pkg1 pkg2".into(),
             extra_image_name: Some("custom-name"),
             rootfs_size: Some(256),
             disabled_services: Some("service1 service2"),

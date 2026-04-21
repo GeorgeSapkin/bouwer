@@ -12,8 +12,7 @@ use human_bytes::human_bytes;
 use slint::platform::Key;
 use slint::{Model, SharedString, VecModel};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
-use std::fmt::Write;
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -38,7 +37,7 @@ use cache::MetadataCache;
 use client::OpenWrtClient;
 use config::Config;
 use containers::Containers;
-use domain::{ImageTag, Preset, Profile, ProfileId, ProfileSliceExt, Target, Version};
+use domain::{ImageTag, PackageList, Preset, Profile, ProfileId, ProfileSliceExt, Target, Version};
 use state::{AppWindowExt, AppWindowWeakExt, Notification, UIState};
 
 slint::include_modules!();
@@ -63,7 +62,8 @@ const BUILD_MILESTONES: &[(&str, f32, &str)] = &[
 #[derive(Default)]
 pub struct AppCore {
     pub config: Config,
-    pub packages: Vec<String>,
+    /// Selected profile packages
+    pub packages: PackageList,
     pub profiles: Vec<Profile>,
     pub versions: Vec<Version>,
 }
@@ -274,7 +274,12 @@ fn on_build(
     let profile_id = ProfileId::from(data.profile_id.as_str());
     let version = Version::from(data.version.as_str());
     let target = Target::from(data.target.as_str());
-    let packages = get_build_packages(core, data.packages.as_str());
+
+    let packages = {
+        let mut packages = PackageList::from(data.packages.as_str());
+        packages.extend(&core.read().expect("Core lock poisoned").packages);
+        packages
+    };
 
     let extra_image_name: String = data
         .extra_image_name
@@ -329,7 +334,7 @@ fn on_build(
         let stream = image_builder
             .build_firmware(BuildArgs {
                 profile_id,
-                packages: &packages,
+                packages,
                 extra_image_name: (!extra_image_name.is_empty())
                     .then_some(extra_image_name.as_str()),
                 rootfs_size: (rootfs_size > 0).then_some(rootfs_size),
@@ -701,21 +706,12 @@ fn on_packages_edited(
         // Wait for 500ms of inactivity
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let current_set: HashSet<_> = text.split_whitespace().collect();
         let removed_packages = core
             .read()
             .expect("Core lock poisoned")
             .packages
-            .iter()
-            .filter(|p| !current_set.contains(p.as_str()))
-            .enumerate()
-            .fold(String::new(), |mut acc, (i, p)| {
-                if i > 0 {
-                    acc.push(' ');
-                }
-                write!(acc, "{p}").unwrap();
-                acc
-            });
+            .diff(&PackageList::from(text.as_str()))
+            .to_string();
         ui_weak.update_state(|s| s.removed_packages_text = removed_packages.into());
 
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
@@ -1021,30 +1017,22 @@ async fn fetch_and_update_packages(
 
     let packages = match packages {
         Ok(p) => {
-            let packages = p + " " + EXTRA_PACKAGES;
-
-            let mut pkgs_vec = packages
-                .split_whitespace()
-                .map(String::from)
-                .collect::<Vec<_>>();
-            pkgs_vec.sort_unstable();
-            pkgs_vec.dedup();
-
+            let original_packages = PackageList::from(format!("{p} {EXTRA_PACKAGES}"));
             if let Ok(mut c) = core.write() {
-                c.packages.clone_from(&pkgs_vec);
+                c.packages.clone_from(&original_packages);
             }
-            pkgs_vec.join(" ")
+            original_packages
         }
         Err(e) => {
             let msg = format!("Error fetching package list for profile: {e}");
             ui_weak.set_notification(Notification::Error, Some(&msg));
-            String::new()
+            PackageList::default()
         }
     };
 
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         ui.update_state(|s| {
-            s.packages_text = packages.into();
+            s.packages_text = packages.to_string().into();
             s.removed_packages_text = SharedString::new();
             s.switch_to(UIState::Idle(None));
         });
@@ -1097,7 +1085,11 @@ fn get_build_command_preview(core: &SharedCore, data: &BuildData) -> String {
         return String::new();
     }
 
-    let packages = get_build_packages(core, data.packages.as_str());
+    let packages = {
+        let mut packages = PackageList::from(data.packages.as_str());
+        packages.extend(&core.read().expect("Core lock poisoned").packages);
+        packages
+    };
 
     let extra_image_name: String = data
         .extra_image_name
@@ -1108,7 +1100,7 @@ fn get_build_command_preview(core: &SharedCore, data: &BuildData) -> String {
 
     let args: Vec<String> = BuildArgs {
         profile_id,
-        packages: &packages,
+        packages,
         extra_image_name: (!extra_image_name.is_empty()).then_some(extra_image_name.as_str()),
         rootfs_size: (rootfs_size > 0).then_some(rootfs_size),
         disabled_services: (!data.disabled_services.is_empty())
@@ -1127,24 +1119,6 @@ fn get_build_command_preview(core: &SharedCore, data: &BuildData) -> String {
         args[1],
         args[2..].join("\n\n    ")
     )
-}
-
-fn get_build_packages(core: &SharedCore, selected_packages: &str) -> String {
-    let current_set: HashSet<_> = selected_packages.split_whitespace().collect();
-    let core = core.read().expect("Core lock poisoned");
-    let removed = core
-        .packages
-        .iter()
-        .filter(|p| !current_set.contains(p.as_str()))
-        .enumerate()
-        .fold(String::new(), |mut acc, (i, p)| {
-            if i > 0 {
-                acc.push(' ');
-            }
-            write!(acc, "-{p}").unwrap();
-            acc
-        });
-    format!("{selected_packages} {removed}")
 }
 
 fn get_build_status(line: &str) -> Option<(f32, String)> {
@@ -1226,7 +1200,7 @@ async fn load_preset_from_path(
     }
 
     // Load original packages for comparison
-    let fetched_pkgs =
+    let fetched_packages =
         fetch_packages_for_profile(&cache, get_image_builder, version, &target, &profile_id)
             .await
             .unwrap_or_else(|e| {
@@ -1235,35 +1209,21 @@ async fn load_preset_from_path(
             });
 
     // TODO: Disable build when there are no packages
-    let packages_source = if fetched_pkgs.is_empty() {
-        EXTRA_PACKAGES.to_string()
-    } else {
-        fetched_pkgs + " " + EXTRA_PACKAGES
-    };
+    let original_packages = PackageList::from(format!("{fetched_packages} {EXTRA_PACKAGES}"));
+    let removed_packages = original_packages.diff(&preset.packages).to_string();
 
-    let mut original_pkgs = packages_source
-        .split_whitespace()
-        .map(String::from)
-        .collect::<Vec<_>>();
-    original_pkgs.sort_unstable();
-    original_pkgs.dedup();
+    if let Ok(mut c) = core.write() {
+        c.packages.clone_from(&original_packages);
+    }
 
-    let current_set: HashSet<_> = preset.packages.split_whitespace().collect();
-    let removed: Vec<String> = original_pkgs
-        .iter()
-        .filter(|p| !current_set.contains(p.as_str()))
-        .cloned()
-        .collect();
-    let removed_str = removed.join(" ");
-
-    ui_weak.upgrade_in_event_loop(clone!((original_pkgs, core, version), move |ui| {
+    ui_weak.upgrade_in_event_loop(clone!((version), move |ui| {
         let mut s = ui.get_state();
         s.disabled_services_text = preset.disabled_services.into();
         s.extra_image_name_text = preset.extra_image_name.into();
         s.overlay_path_text = preset.overlay_path.to_string_lossy().as_ref().into();
-        s.packages_text = preset.packages.into();
+        s.packages_text = preset.packages.to_string().into();
         s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
-        s.removed_packages_text = removed_str.into();
+        s.removed_packages_text = removed_packages.into();
         s.rootfs_size_text = if preset.rootfs_size == 0 {
             SharedString::new()
         } else {
@@ -1281,10 +1241,6 @@ async fn load_preset_from_path(
         }
 
         ui.set_state(s);
-
-        if let Ok(mut c) = core.write() {
-            c.packages = original_pkgs;
-        }
 
         let ui_weak = ui.as_weak();
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
@@ -1353,7 +1309,7 @@ async fn refresh_downloaded_builders(ui_weak: slint::Weak<AppWindow>) {
         .into_iter()
         .map(|(tag_str, size)| {
             let size_str = human_bytes(size as f64);
-            let image_tag = ImageTag(tag_str.clone());
+            let image_tag = ImageTag(tag_str);
 
             if let (Ok(target), Ok(version)) =
                 (Target::try_from(&image_tag), Version::try_from(&image_tag))
@@ -1361,7 +1317,7 @@ async fn refresh_downloaded_builders(ui_weak: slint::Weak<AppWindow>) {
                 return (
                     Some((version.clone(), target.clone())),
                     ImageBuilderItem {
-                        tag: tag_str.into(),
+                        tag: image_tag.0.into(),
                         version: version.to_string().into(),
                         target: target.to_string().into(),
                         size: size_str.into(),
@@ -1369,7 +1325,7 @@ async fn refresh_downloaded_builders(ui_weak: slint::Weak<AppWindow>) {
                 );
             }
 
-            let shared_tag: SharedString = tag_str.into();
+            let shared_tag: SharedString = image_tag.0.into();
             (
                 None,
                 ImageBuilderItem {

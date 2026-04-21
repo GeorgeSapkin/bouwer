@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{
-    cmp::Ordering,
-    fmt::{Display, Formatter},
-    path::{Path, PathBuf},
-};
+use std::cmp::Ordering;
+use std::collections::HashSet;
+use std::fmt::{Display, Formatter};
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +43,161 @@ pub struct OpenWrtVersions {
     pub versions_list: Vec<Version>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Package {
+    pub name: String,
+    pub enabled: bool,
+}
+
+impl Display for Package {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if self.enabled {
+            write!(f, "{}", self.name)
+        } else {
+            write!(f, "-{}", self.name)
+        }
+    }
+}
+
+impl From<String> for Package {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+impl From<&str> for Package {
+    fn from(s: &str) -> Self {
+        if let Some(name) = s.strip_prefix('-') {
+            Self {
+                name: name.to_string(),
+                enabled: false,
+            }
+        } else {
+            Self {
+                name: s.to_string(),
+                enabled: true,
+            }
+        }
+    }
+}
+
+impl Ord for Package {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Sort by enabled (true first), then by name
+        self.enabled
+            .cmp(&other.enabled)
+            .reverse()
+            .then_with(|| self.name.cmp(&other.name))
+    }
+}
+
+impl PartialOrd for Package {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(from = "String", into = "String")]
+pub struct PackageList(Vec<Package>);
+
+impl PackageList {
+    /// Get all packages in self that are not mentioned in other. Ignores enabled state.
+    pub fn diff(&self, other: &PackageList) -> PackageList {
+        let other_names: HashSet<_> = other.iter().map(|p| p.name.as_str()).collect();
+        self.iter()
+            .filter(|p| !other_names.contains(p.name.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    /// Extends self with packages from other. Ignores enabled state.
+    pub fn extend(&mut self, other: &PackageList) {
+        let self_names: HashSet<&str> = self.iter().map(|p| p.name.as_str()).collect();
+        let extras: Vec<Package> = other
+            .iter()
+            .filter(|p| !self_names.contains(p.name.as_str()))
+            .map(|p| Package {
+                name: p.name.clone(),
+                enabled: false,
+            })
+            .collect();
+        self.0.extend(extras);
+        self.0.sort_unstable();
+        self.0.dedup();
+    }
+}
+
+impl Deref for PackageList {
+    type Target = [Package];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Display for PackageList {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        for (i, package) in self.iter().enumerate() {
+            if i > 0 {
+                write!(f, " ")?;
+            }
+            write!(f, "{package}")?;
+        }
+        Ok(())
+    }
+}
+
+impl FromIterator<Package> for PackageList {
+    fn from_iter<I: IntoIterator<Item = Package>>(iter: I) -> Self {
+        Self::from(iter.into_iter().collect::<Vec<_>>())
+    }
+}
+
+impl From<Vec<Package>> for PackageList {
+    fn from(mut v: Vec<Package>) -> Self {
+        v.sort_unstable();
+        v.dedup();
+        Self(v)
+    }
+}
+
+impl From<&str> for PackageList {
+    fn from(s: &str) -> Self {
+        s.split_whitespace().map(Package::from).collect()
+    }
+}
+
+impl From<String> for PackageList {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+impl From<PackageList> for String {
+    fn from(list: PackageList) -> Self {
+        list.to_string()
+    }
+}
+
+impl IntoIterator for PackageList {
+    type Item = Package;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'iter> IntoIterator for &'iter PackageList {
+    type Item = &'iter Package;
+    type IntoIter = std::slice::Iter<'iter, Package>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Preset {
     pub release_series: ReleaseSeries,
@@ -56,7 +211,7 @@ pub struct Preset {
         deserialize_with = "deserialize_u32_or_string"
     )]
     pub rootfs_size: u32,
-    pub packages: String,
+    pub packages: PackageList,
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub disabled_services: String,
     #[serde(skip_serializing_if = "is_path_empty", default)]
@@ -71,7 +226,7 @@ impl From<BuildData> for Preset {
             profile_id: data.profile_id.as_str().into(),
             extra_image_name: data.extra_image_name.into(),
             rootfs_size: data.rootfs_size.cast_unsigned(),
-            packages: data.packages.into(),
+            packages: data.packages.as_str().into(),
             disabled_services: data.disabled_services.into(),
             overlay_path: data.overlay_path.as_str().into(),
         }
@@ -315,6 +470,7 @@ pub struct Version {
     pub patch: u8,
     pub rc: Option<u8>,
 }
+
 impl Version {
     pub fn to_release_series(&self) -> ReleaseSeries {
         ReleaseSeries::from(self)
@@ -430,7 +586,7 @@ fn is_path_empty(p: &Path) -> bool {
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_zero(v: &u32) -> bool {
+const fn is_zero(v: &u32) -> bool {
     *v == 0
 }
 
@@ -693,5 +849,128 @@ mod tests {
             let w: Wrapper = serde_json::from_str(json).unwrap();
             assert_eq!(w.val, expected);
         }
+    }
+
+    #[test]
+    fn test_package_display() {
+        let p1 = Package {
+            name: "luci".into(),
+            enabled: true,
+        };
+        let p2 = Package {
+            name: "dnsmasq".into(),
+            enabled: false,
+        };
+        assert_eq!(p1.to_string(), "luci");
+        assert_eq!(p2.to_string(), "-dnsmasq");
+    }
+
+    #[test]
+    fn test_package_list_display() {
+        let list = PackageList::from(vec![
+            Package {
+                name: "pkg1".into(),
+                enabled: true,
+            },
+            Package {
+                name: "pkg2".into(),
+                enabled: false,
+            },
+            Package {
+                name: "pkg3".into(),
+                enabled: true,
+            },
+        ]);
+        assert_eq!(list.to_string(), "pkg1 pkg3 -pkg2");
+    }
+
+    #[test]
+    fn test_package_list_from_str() {
+        let input = "  pkg1   -pkg2  pkg3  ";
+        let list = PackageList::from(input);
+        assert_eq!(list.len(), 3);
+
+        assert_eq!(list[0].name, "pkg1");
+        assert!(list[0].enabled);
+
+        assert_eq!(list[1].name, "pkg3");
+        assert!(list[1].enabled);
+
+        assert_eq!(list[2].name, "pkg2");
+        assert!(!list[2].enabled);
+
+        assert_eq!(list.to_string(), "pkg1 pkg3 -pkg2");
+    }
+
+    #[test]
+    fn test_package_conversions() {
+        let p1 = Package::from("abc");
+        assert_eq!(p1.name, "abc");
+        assert!(p1.enabled);
+
+        let p2 = Package::from("def".to_string());
+        assert_eq!(p2.name, "def");
+        assert!(p2.enabled);
+    }
+
+    #[test]
+    fn test_package_list_default() {
+        let list = PackageList::default();
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn test_package_list_diff() {
+        let list1 = PackageList::from("pkg1 pkg2 pkg3");
+        let list2 = PackageList::from("pkg2 pkg4");
+
+        let diff = list1.diff(&list2);
+
+        // pkg1 and pkg3 should remain from list1
+        assert_eq!(diff.len(), 2);
+        assert_eq!(diff.to_string(), "pkg1 pkg3");
+
+        // Test ignoring enabled state in both lists
+        let list3 = PackageList::from("pkg1 -pkg2");
+        let list4 = PackageList::from("pkg2 pkg5");
+        let diff2 = list3.diff(&list4);
+
+        // pkg2 is removed even if disabled in list3 or enabled in list4
+        assert_eq!(diff2.to_string(), "pkg1");
+
+        let empty = PackageList::default();
+        assert_eq!(list1.diff(&empty).to_string(), "pkg1 pkg2 pkg3");
+        assert_eq!(empty.diff(&list1).to_string(), "");
+    }
+
+    #[test]
+    fn test_package_list_extend() {
+        let mut list1 = PackageList::from("pkg1 -pkg2");
+        let list2 = PackageList::from("pkg2 pkg3");
+
+        list1.extend(&list2);
+
+        // pkg1 (enabled, from list1)
+        // pkg2 (disabled, from list1)
+        // pkg3 (disabled, from list2 via extend)
+        assert_eq!(list1.len(), 3);
+
+        let p1 = list1.iter().find(|p| p.name == "pkg1").unwrap();
+        let p2 = list1.iter().find(|p| p.name == "pkg2").unwrap();
+        let p3 = list1.iter().find(|p| p.name == "pkg3").unwrap();
+
+        assert!(p1.enabled);
+        assert!(!p2.enabled);
+        assert!(!p3.enabled);
+    }
+
+    #[test]
+    fn test_package_list_conversions() {
+        let s = "pkg1 -pkg2".to_string();
+        let list = PackageList::from(s);
+        assert_eq!(list.to_string(), "pkg1 -pkg2");
+
+        let s2: String = list.into();
+        assert_eq!(s2, "pkg1 -pkg2");
     }
 }
