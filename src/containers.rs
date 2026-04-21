@@ -34,7 +34,7 @@ pub struct Containers {
 
 pub struct ContainerGuard<S> {
     containers: Containers,
-    container_id: String,
+    container_id: Option<String>,
     stream: S,
 }
 
@@ -42,7 +42,7 @@ impl<S> ContainerGuard<S> {
     fn new(containers: Containers, container_id: String, stream: S) -> Self {
         Self {
             containers,
-            container_id,
+            container_id: Some(container_id),
             stream,
         }
     }
@@ -50,11 +50,12 @@ impl<S> ContainerGuard<S> {
 
 impl<S> Drop for ContainerGuard<S> {
     fn drop(&mut self) {
-        let containers = self.containers.clone();
-        let id = self.container_id.clone();
-        tokio::spawn(async move {
-            containers.wait_and_remove(&id).await;
-        });
+        if let Some(id) = self.container_id.take() {
+            let containers = self.containers.clone();
+            tokio::spawn(async move {
+                containers.wait_and_remove(&id).await;
+            });
+        }
     }
 }
 
