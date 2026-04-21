@@ -442,7 +442,7 @@ fn on_delete_builder(
 
         match containers.remove_image(data.tag.as_str()).await {
             Ok(()) => {
-                let image_tag = ImageTag(data.tag.to_string());
+                let image_tag: ImageTag = data.tag.as_str().into();
                 let msg = match (Target::try_from(&image_tag), Version::try_from(&image_tag)) {
                     (Ok(target), Ok(version)) => {
                         format!("Image builder for {version} {target} deleted.")
@@ -809,7 +809,7 @@ fn on_profile_selected(
     ui_weak.update_state(clone!((data, profile), move |s| {
         s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
         s.search_text = data.name;
-        s.selected_id = profile.id.0.as_str().into();
+        s.selected_id = profile.id.as_ref().into();
         s.selected_target = profile.target.to_string().into();
         s.selected_model = profile.format_all_models().as_str().into();
 
@@ -1081,7 +1081,7 @@ fn filter_versions(versions: &[Version], show_rcs: bool) -> Vec<SharedString> {
 
 fn get_build_command_preview(core: &SharedCore, data: &BuildData) -> String {
     let profile_id = ProfileId::from(data.profile_id.as_str());
-    if profile_id.0.is_empty() {
+    if profile_id.is_empty() {
         return String::new();
     }
 
@@ -1187,7 +1187,7 @@ async fn load_preset_from_path(
             s.packages_text = SharedString::new();
             s.removed_packages_text = SharedString::new();
             s.search_text = name.into();
-            s.selected_id = profile_id.0.as_str().into();
+            s.selected_id = profile_id.as_ref().into();
             s.selected_model = model.into();
             s.selected_target = target.to_string().into();
         }
@@ -1309,7 +1309,7 @@ async fn refresh_downloaded_builders(ui_weak: slint::Weak<AppWindow>) {
         .into_iter()
         .map(|(tag_str, size)| {
             let size_str = human_bytes(size as f64);
-            let image_tag = ImageTag(tag_str);
+            let image_tag: ImageTag = tag_str.into();
 
             if let (Ok(target), Ok(version)) =
                 (Target::try_from(&image_tag), Version::try_from(&image_tag))
@@ -1317,7 +1317,7 @@ async fn refresh_downloaded_builders(ui_weak: slint::Weak<AppWindow>) {
                 return (
                     Some((version.clone(), target.clone())),
                     ImageBuilderItem {
-                        tag: image_tag.0.into(),
+                        tag: image_tag.as_ref().into(),
                         version: version.to_string().into(),
                         target: target.to_string().into(),
                         size: size_str.into(),
@@ -1325,7 +1325,7 @@ async fn refresh_downloaded_builders(ui_weak: slint::Weak<AppWindow>) {
                 );
             }
 
-            let shared_tag: SharedString = image_tag.0.into();
+            let shared_tag: SharedString = image_tag.as_ref().into();
             (
                 None,
                 ImageBuilderItem {

@@ -140,7 +140,7 @@ impl Containers {
 
     /// Checks if a specific container image exists locally
     pub async fn image_exists(&self, tag: &ImageTag) -> bool {
-        self.docker.inspect_image(&tag.0).await.is_ok()
+        self.docker.inspect_image(tag).await.is_ok()
     }
 
     /// Checks if the container daemon is available

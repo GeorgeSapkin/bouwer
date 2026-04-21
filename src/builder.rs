@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn test_build_args_minimal() {
         let args = BuildArgs {
-            profile_id: ProfileId("test-profile".to_string()),
+            profile_id: "test-profile".into(),
             packages: "pkg1 pkg2".into(),
             extra_image_name: None,
             rootfs_size: None,
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn test_build_args_full() {
         let args = BuildArgs {
-            profile_id: ProfileId("test-profile".to_string()),
+            profile_id: "test-profile".into(),
             packages: "pkg1 pkg2".into(),
             extra_image_name: Some("custom-name"),
             rootfs_size: Some(256),

@@ -13,11 +13,25 @@ use serde::{Deserialize, Serialize};
 use crate::BuildData;
 
 #[derive(Clone)]
-pub struct ImageTag(pub String);
+pub struct ImageTag(String);
 
 impl ImageTag {
     pub fn new(target: &Target, version: &Version, image_base: &str) -> Self {
         Self(format!("{image_base}:{}-{version}", target.to_slug()))
+    }
+}
+
+impl AsRef<str> for ImageTag {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Deref for ImageTag {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -30,6 +44,18 @@ impl Display for ImageTag {
 impl From<&ImageTag> for Option<String> {
     fn from(tag: &ImageTag) -> Self {
         Some(tag.0.clone())
+    }
+}
+
+impl From<&str> for ImageTag {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for ImageTag {
+    fn from(s: String) -> Self {
+        Self(s)
     }
 }
 
@@ -235,7 +261,21 @@ impl From<BuildData> for Preset {
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
-pub struct ProfileId(pub String);
+pub struct ProfileId(String);
+
+impl AsRef<str> for ProfileId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Deref for ProfileId {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 impl Display for ProfileId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
