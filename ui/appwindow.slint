@@ -117,11 +117,11 @@ export global StateBridge {
     callback profile_search_edited(string);
     callback profile_search_key_pressed(ProfileSearchKeyData) -> bool;
     callback profile_selected(ProfileData);
+    callback refresh_builders_requested();
     callback save_preset_requested(BuildData);
     callback select_build_folder_requested();
     callback select_overlay_folder_requested();
     callback show_rcs_toggled(ShowRcsData);
-    callback refresh_builders_requested();
     callback update_build_preview(BuildData);
     callback version_changed(string);
 }

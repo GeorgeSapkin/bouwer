@@ -987,6 +987,8 @@ fn init<F, Fut>(
             _ => {}
         }
 
+        refresh_downloaded_builders(ui_weak.clone()).await;
+
         // Always set busy to false and clear profiles at the end of the initial
         // load task
         let _ = ui_weak.upgrade_in_event_loop(|ui| {
@@ -999,12 +1001,6 @@ fn init<F, Fut>(
             let _ = ui_weak.upgrade_in_event_loop(move |ui| {
                 ui.invoke_request_profile_search_focus();
             });
-        });
-
-        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.invoke_recalculate_preview();
-            ui.global::<StateBridge>()
-                .invoke_refresh_builders_requested();
         });
     }));
 }
