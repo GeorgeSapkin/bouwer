@@ -1,0 +1,51 @@
+// Copyright (C) 2026 George Sapkin
+//
+// SPDX-License-Identifier: GPL-3.0-only
+
+import { Palette } from "std-widgets.slint";
+import { Tooltip } from "tooltip.slint";
+
+export component ImageButton inherits Rectangle {
+    in property <bool> enabled: true;
+    in property <length> image_height: 18px;
+    in property <length> image_width: 18px;
+    in property <image> source;
+    in property <string> tooltip_text: "";
+    in property <LayoutAlignment> tooltip_alignment: LayoutAlignment.start;
+
+    callback clicked();
+
+    width: 30px;
+    height: 30px;
+    border-radius: 4px;
+    background: touch_area.has-hover && self.enabled ? Palette.alternate-background : transparent;
+
+    animate background {
+        duration: 150ms;
+        easing: ease-in-out;
+    }
+
+    image := Image {
+        source: root.source;
+        height: root.image_height;
+        width: root.image_width;
+        horizontal-alignment: center;
+        image-rendering: pixelated;
+        colorize: Palette.control-foreground;
+        opacity: root.enabled ? 1.0 : 0.5;
+    }
+
+    touch_area := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    Tooltip {
+        text: root.tooltip_text;
+        active: touch_area.has-hover && root.tooltip_text != "";
+        x: root.tooltip_alignment == LayoutAlignment.start ? image.x : image.x + image.width - self.width;
+        y: parent.height + 8px;
+    }
+}

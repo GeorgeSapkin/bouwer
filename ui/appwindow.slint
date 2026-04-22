@@ -21,6 +21,7 @@ import {
 import { AboutDialog } from "about.slint";
 import { ImageBuilderItem, ImageBuilderList } from "builderlist.slint";
 import { EditableComboBox } from "combobox.slint";
+import { ImageButton } from "imagebutton.slint";
 import { Notification } from "notification.slint";
 import { Tooltip } from "tooltip.slint";
 
@@ -171,6 +172,7 @@ export component AppWindow inherits Window {
 
         HorizontalBox {
             padding: 0px;
+            z: 2;
             version_text := Text {
                 text: "Version:";
                 font-size: 14px;
@@ -200,28 +202,15 @@ export component AppWindow inherits Window {
                 }
             }
 
-            about_icon := Rectangle {
-                width: 30px;
-                height: 30px;
-                border-radius: 4px;
-                background: about_touch.has-hover ? Palette.alternate-background : transparent;
-                animate background {
-                    duration: 150ms;
-                    easing: ease-in-out;
-                }
+            ImageButton {
+                source: @image-url("../assets/logo_no_frame.svg");
+                image_height: 22px;
+                image_width: 22px;
+                tooltip_text: "About Bouwer";
+                tooltip_alignment: LayoutAlignment.end;
 
-                Image {
-                    source: @image-url("../assets/logo_no_frame.svg");
-                    colorize: Palette.control-foreground;
-                    width: 22px;
-                    height: 22px;
-                    horizontal-alignment: center;
-                }
-
-                about_touch := TouchArea {
-                    clicked => {
-                        StateBridge.state.show_about = true;
-                    }
+                clicked => {
+                    StateBridge.state.show_about = true;
                 }
             }
         }
@@ -390,7 +379,7 @@ export component AppWindow inherits Window {
                                 height: extra_image_rect.height;
 
                                 extra_image_tooltip := Tooltip {
-                                    text: "Extra name appended to the generated firmware image filenames.";
+                                    text: "Extra name appended to the generated firmware image filenames";
                                     active: extra_image_touch.has-hover;
                                     x: 0;
                                     y: parent.height + 8px;
@@ -424,7 +413,7 @@ export component AppWindow inherits Window {
                             height: packages_rect.height;
 
                             packages_tooltip := Tooltip {
-                                text: "Space-separated list of packages to include in the firmware.";
+                                text: "Space-separated list of packages to include in the firmware";
                                 active: packages_touch.has-hover;
                                 x: 0;
                                 y: parent.height + 8px;
@@ -461,7 +450,7 @@ export component AppWindow inherits Window {
                             height: removed_packages_rect.height;
 
                             remove_packages_tooltip := Tooltip {
-                                text: "Default packages that are excluded from the firmware.";
+                                text: "Default packages that are excluded from the firmware";
                                 active: remove_packages_touch.has-hover;
                                 x: 0;
                                 y: parent.height + 8px;
@@ -501,7 +490,7 @@ export component AppWindow inherits Window {
                                 height: rootfs_size_rect.height;
 
                                 rootfs_size_tooltip := Tooltip {
-                                    text: "Size of the root filesystem in MiB.";
+                                    text: "Size of the root filesystem in MiB";
                                     active: rootfs_size_touch.has-hover;
                                     x: 0;
                                     y: parent.height + 8px;
@@ -536,7 +525,7 @@ export component AppWindow inherits Window {
                             height: disabled_services_rect.height;
 
                             disabled_services_tooltip := Tooltip {
-                                text: "Space-separated list of services to disable in the firmware.";
+                                text: "Space-separated list of services to disable in the firmware";
                                 active: disabled_services_touch.has-hover;
                                 x: 0;
                                 y: parent.height + 8px;
@@ -573,7 +562,7 @@ export component AppWindow inherits Window {
                                 height: overlay_path_rect.height;
 
                                 overlay_path_tooltip := Tooltip {
-                                    text: "Path to the overlay folder which content will be added on top of the root filesystem.";
+                                    text: "Path to the overlay folder which content will be added on top of the root filesystem";
                                     active: overlay_path_touch.has-hover;
                                     x: 0;
                                     y: parent.height + 8px;
@@ -616,7 +605,7 @@ export component AppWindow inherits Window {
                                 height: build_path_rect.height;
 
                                 build_path_tooltip := Tooltip {
-                                    text: "Path to the build folder where the firmware images will be built.";
+                                    text: "Path to the build folder where the firmware images will be built";
                                     active: build_path_touch.has-hover;
                                     x: 0;
                                     y: parent.height + 8px;
@@ -667,7 +656,7 @@ export component AppWindow inherits Window {
                             height: build_command_rect.height;
 
                             build_command_tooltip := Tooltip {
-                                text: "Build command that will be passed to the image builder.";
+                                text: "Build command that will be passed to the image builder";
                                 active: build_command_touch.has-hover;
                                 x: 0;
                                 y: parent.height + 8px;
@@ -702,29 +691,13 @@ export component AppWindow inherits Window {
                             horizontal-stretch: 1;
                         }
 
-                        refresh_builders := Rectangle {
-                            width: 30px;
-                            height: 30px;
-                            border-radius: 4px;
-                            background: refresh_builders_touch.has-hover ? Palette.alternate-background : transparent;
-                            animate background {
-                                duration: 150ms;
-                                easing: ease-in-out;
-                            }
-
-                            Image {
-                                source: @image-url("../assets/refresh.svg");
-                                width: 18px;
-                                height: 18px;
-                                horizontal-alignment: center;
-                                image-rendering: pixelated;
-                                colorize: Palette.control-foreground;
-                            }
-
-                            refresh_builders_touch := TouchArea {
-                                clicked => {
-                                    StateBridge.refresh_builders_requested();
-                                }
+                        ImageButton {
+                            source: @image-url("../assets/refresh.svg");
+                            enabled: !root.state.busy && root.state.image_exists;
+                            tooltip_text: "Refresh list of downloaded image builders";
+                            tooltip_alignment: LayoutAlignment.end;
+                            clicked => {
+                                StateBridge.refresh_builders_requested();
                             }
                         }
                     }
