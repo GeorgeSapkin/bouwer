@@ -490,14 +490,15 @@ impl TryFrom<&ImageTag> for Target {
     type Error = &'static str;
 
     fn try_from(tag: &ImageTag) -> Result<Self, Self::Error> {
-        let (_, stripped) = tag.0.split_once(':').ok_or("invalid tag format")?;
-        let (idx, _) = stripped
-            .rmatch_indices('-')
-            .find(|&(i, _)| {
-                let suffix = &stripped[i + 1..];
-                suffix.starts_with(|c: char| c.is_ascii_digit()) && suffix.contains('.')
-            })
-            .ok_or("could not parse target and version")?;
+        let Some((_, stripped)) = tag.0.split_once(':') else {
+            return Err("invalid tag format");
+        };
+        let Some((idx, _)) = stripped.rmatch_indices('-').find(|&(i, _)| {
+            let suffix = &stripped[i + 1..];
+            suffix.starts_with(|c: char| c.is_ascii_digit()) && suffix.contains('.')
+        }) else {
+            return Err("could not parse target and version");
+        };
 
         let target_slug = &stripped[..idx];
         Ok(Target::from(target_slug.replace('-', "/").as_str()))
@@ -592,14 +593,15 @@ impl TryFrom<&ImageTag> for Version {
     type Error = &'static str;
 
     fn try_from(tag: &ImageTag) -> Result<Self, Self::Error> {
-        let (_, stripped) = tag.0.split_once(':').ok_or("invalid tag format")?;
-        let (idx, _) = stripped
-            .rmatch_indices('-')
-            .find(|&(i, _)| {
-                let suffix = &stripped[i + 1..];
-                suffix.starts_with(|c: char| c.is_ascii_digit()) && suffix.contains('.')
-            })
-            .ok_or("could not parse target and version")?;
+        let Some((_, stripped)) = tag.0.split_once(':') else {
+            return Err("invalid tag format");
+        };
+        let Some((idx, _)) = stripped.rmatch_indices('-').find(|&(i, _)| {
+            let suffix = &stripped[i + 1..];
+            suffix.starts_with(|c: char| c.is_ascii_digit()) && suffix.contains('.')
+        }) else {
+            return Err("could not parse target and version");
+        };
 
         Ok(Version::from(&stripped[idx + 1..]))
     }
