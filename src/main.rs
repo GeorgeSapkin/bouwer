@@ -792,13 +792,10 @@ fn on_load_preset(
 
 fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, data: BuildData) {
     let preset = Preset::from(data);
-    let filename = if preset.extra_image_name.is_empty() {
-        format!("preset-{}.json", preset.profile_id)
+    let filename = if let Some(extra_image_name) = &preset.extra_image_name {
+        format!("preset-{}-{extra_image_name}.json", preset.profile_id)
     } else {
-        format!(
-            "preset-{}-{}.json",
-            preset.profile_id, preset.extra_image_name
-        )
+        format!("preset-{}.json", preset.profile_id)
     };
 
     ui_weak.switch_state_to(UIState::SavingPreset);
@@ -1337,19 +1334,26 @@ async fn load_preset_from_path(
     })?;
 
     let profile_id = preset.profile_id.clone();
-    let overlay_path = preset.overlay_path.clone();
-    ui_weak.update_state(clone!(
-        (profile_id, name, model, target, overlay_path),
-        move |s| {
-            s.overlay_path_text = overlay_path.to_string_lossy().as_ref().into();
-            s.packages_text = SharedString::new();
-            s.removed_packages_text = SharedString::new();
-            s.search_text = name.into();
-            s.selected_id = profile_id.as_ref().into();
-            s.selected_model = model.into();
-            s.selected_target = target.to_string().into();
-        }
-    ));
+    ui_weak.update_state(clone!((profile_id, name, model, target), move |s| {
+        s.disabled_services_text = preset.disabled_services.unwrap_or_default().into();
+        s.extra_image_name_text = preset.extra_image_name.unwrap_or_default().into();
+        s.overlay_path_text = preset
+            .overlay_path
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+            .into();
+        s.packages_text = SharedString::new();
+        s.removed_packages_text = SharedString::new();
+        s.rootfs_size_text = preset
+            .rootfs_size
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+            .into();
+        s.search_text = name.into();
+        s.selected_id = profile_id.as_ref().into();
+        s.selected_model = model.into();
+        s.selected_target = target.to_string().into();
+    }));
 
     let exists = set_image_exists(ui_weak, get_image_builder, version, &target, false).await;
     if !exists {
@@ -1376,17 +1380,9 @@ async fn load_preset_from_path(
 
     ui_weak.upgrade_in_event_loop(clone!((version), move |ui| {
         let mut s = ui.get_state();
-        s.disabled_services_text = preset.disabled_services.into();
-        s.extra_image_name_text = preset.extra_image_name.into();
-        s.overlay_path_text = preset.overlay_path.to_string_lossy().as_ref().into();
         s.packages_text = preset.packages.to_string().into();
         s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
         s.removed_packages_text = removed_packages.into();
-        s.rootfs_size_text = if preset.rootfs_size == 0 {
-            SharedString::new()
-        } else {
-            preset.rootfs_size.to_string().into()
-        };
         s.switch_to(UIState::Idle(None));
 
         if !version.same_release_series(&preset.release_series) {

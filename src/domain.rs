@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -229,19 +229,19 @@ pub struct Preset {
     pub release_series: ReleaseSeries,
     pub target: Target,
     pub profile_id: ProfileId,
-    #[serde(skip_serializing_if = "String::is_empty", default)]
-    pub extra_image_name: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub extra_image_name: Option<String>,
     #[serde(
-        skip_serializing_if = "is_zero",
+        skip_serializing_if = "Option::is_none",
         default,
         deserialize_with = "deserialize_u32_or_string"
     )]
-    pub rootfs_size: u32,
+    pub rootfs_size: Option<u32>,
     pub packages: PackageList,
-    #[serde(skip_serializing_if = "String::is_empty", default)]
-    pub disabled_services: String,
-    #[serde(skip_serializing_if = "is_path_empty", default)]
-    pub overlay_path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub disabled_services: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub overlay_path: Option<PathBuf>,
 }
 
 impl From<BuildData> for Preset {
@@ -250,11 +250,17 @@ impl From<BuildData> for Preset {
             release_series: data.version.as_str().into(),
             target: data.target.as_str().into(),
             profile_id: data.profile_id.as_str().into(),
-            extra_image_name: data.extra_image_name.into(),
-            rootfs_size: data.rootfs_size.cast_unsigned(),
+            extra_image_name: (!data.extra_image_name.is_empty())
+                .then(|| data.extra_image_name.to_string()),
+            rootfs_size: {
+                let size = data.rootfs_size.cast_unsigned();
+                (size > 0).then_some(size)
+            },
             packages: data.packages.as_str().into(),
-            disabled_services: data.disabled_services.into(),
-            overlay_path: data.overlay_path.as_str().into(),
+            disabled_services: (!data.disabled_services.is_empty())
+                .then(|| data.disabled_services.to_string()),
+            overlay_path: (!data.overlay_path.is_empty())
+                .then(|| data.overlay_path.as_str().into()),
         }
     }
 }
@@ -603,7 +609,7 @@ impl TryFrom<&ImageTag> for Version {
     }
 }
 
-fn deserialize_u32_or_string<'de, D>(deserializer: D) -> Result<u32, D::Error>
+fn deserialize_u32_or_string<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -615,19 +621,13 @@ where
     }
 
     match U32OrString::deserialize(deserializer)? {
-        U32OrString::U32(v) => Ok(v),
-        U32OrString::String(s) if s.is_empty() => Ok(0),
-        U32OrString::String(s) => s.parse::<u32>().map_err(serde::de::Error::custom),
+        U32OrString::U32(v) => Ok((v > 0).then_some(v)),
+        U32OrString::String(s) if s.is_empty() => Ok(None),
+        U32OrString::String(s) => s
+            .parse::<u32>()
+            .map(|v| (v > 0).then_some(v))
+            .map_err(serde::de::Error::custom),
     }
-}
-
-fn is_path_empty(p: &Path) -> bool {
-    p.as_os_str().is_empty()
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref)]
-const fn is_zero(v: &u32) -> bool {
-    *v == 0
 }
 
 #[cfg(test)]
@@ -794,11 +794,11 @@ mod tests {
             },
             target: "ath79/generic".into(),
             profile_id: "id".into(),
-            extra_image_name: "openssl".into(),
-            rootfs_size: 5000,
+            extra_image_name: Some("openssl".into()),
+            rootfs_size: Some(5000),
             packages: "luci".into(),
-            disabled_services: "dnsmasq".into(),
-            overlay_path: "/path/to/overlay".into(),
+            disabled_services: Some("dnsmasq".into()),
+            overlay_path: Some("/path/to/overlay".into()),
         };
 
         let json = serde_json::to_string(&preset).unwrap();
@@ -820,11 +820,11 @@ mod tests {
             },
             target: "ath79/generic".into(),
             profile_id: "id".into(),
-            extra_image_name: String::new(),
-            rootfs_size: 0,
+            extra_image_name: None,
+            rootfs_size: None,
             packages: "luci".into(),
-            disabled_services: String::new(),
-            overlay_path: PathBuf::new(),
+            disabled_services: None,
+            overlay_path: None,
         };
 
         let json = serde_json::to_string(&preset).unwrap();
@@ -887,13 +887,13 @@ mod tests {
         #[derive(Debug, Deserialize, PartialEq)]
         struct Wrapper {
             #[serde(deserialize_with = "deserialize_u32_or_string")]
-            val: u32,
+            val: Option<u32>,
         }
 
         let cases = [
-            (r#"{"val": 5000}"#, 5000),
-            (r#"{"val": "5000"}"#, 5000),
-            (r#"{"val": ""}"#, 0),
+            (r#"{"val": 5000}"#, Some(5000)),
+            (r#"{"val": "5000"}"#, Some(5000)),
+            (r#"{"val": ""}"#, None),
         ];
 
         for (json, expected) in cases {
