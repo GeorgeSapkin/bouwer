@@ -10,7 +10,6 @@ export component Notification inherits Rectangle {
     in property <bool> is_error: false;
     in property <bool> is_warning: false;
 
-    height: 80px;
     opacity: 0.0;
     clip: true;
     y: -80px;
@@ -40,6 +39,7 @@ export component Notification inherits Rectangle {
                     text: root.text;
                     color: transparent;
                     vertical-alignment: center;
+                    wrap: TextWrap.word-wrap;
                     font-size: 14px;
                     horizontal-stretch: 1;
                 }
