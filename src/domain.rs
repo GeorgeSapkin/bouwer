@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -125,7 +125,7 @@ impl PartialOrd for Package {
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(from = "String", into = "String")]
-pub struct PackageList(Vec<Package>);
+pub struct PackageList(BTreeSet<Package>);
 
 impl PackageList {
     /// Get all packages in self that are not mentioned in other. Ignores enabled state.
@@ -149,13 +149,11 @@ impl PackageList {
             })
             .collect();
         self.0.extend(extras);
-        self.0.sort_unstable();
-        self.0.dedup();
     }
 }
 
 impl Deref for PackageList {
-    type Target = [Package];
+    type Target = BTreeSet<Package>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -181,10 +179,8 @@ impl FromIterator<Package> for PackageList {
 }
 
 impl From<Vec<Package>> for PackageList {
-    fn from(mut v: Vec<Package>) -> Self {
-        v.sort_unstable();
-        v.dedup();
-        Self(v)
+    fn from(v: Vec<Package>) -> Self {
+        Self(v.into_iter().collect())
     }
 }
 
@@ -208,7 +204,7 @@ impl From<PackageList> for String {
 
 impl IntoIterator for PackageList {
     type Item = Package;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+    type IntoIter = std::collections::btree_set::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -217,7 +213,7 @@ impl IntoIterator for PackageList {
 
 impl<'iter> IntoIterator for &'iter PackageList {
     type Item = &'iter Package;
-    type IntoIter = std::slice::Iter<'iter, Package>;
+    type IntoIter = std::collections::btree_set::Iter<'iter, Package>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
@@ -941,14 +937,19 @@ mod tests {
         let list = PackageList::from(input);
         assert_eq!(list.len(), 3);
 
-        assert_eq!(list[0].name, "pkg1");
-        assert!(list[0].enabled);
+        let mut iter = list.iter();
+        let pkg1 = iter.next().unwrap();
+        let pkg2 = iter.next().unwrap();
+        let pkg3 = iter.next().unwrap();
 
-        assert_eq!(list[1].name, "pkg3");
-        assert!(list[1].enabled);
+        assert_eq!(pkg1.name, "pkg1");
+        assert!(pkg1.enabled);
 
-        assert_eq!(list[2].name, "pkg2");
-        assert!(!list[2].enabled);
+        assert_eq!(pkg2.name, "pkg3");
+        assert!(pkg2.enabled);
+
+        assert_eq!(pkg3.name, "pkg2");
+        assert!(!pkg3.enabled);
 
         assert_eq!(list.to_string(), "pkg1 pkg3 -pkg2");
     }
