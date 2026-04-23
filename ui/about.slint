@@ -19,6 +19,12 @@ export component AboutDialog inherits Rectangle {
         easing: ease-in-out;
     }
 
+    changed show => {
+        if (show) {
+            scope.focus()
+        }
+    }
+
     // Block events to underlying UI and provide light-dismiss (click outside
     // to close)
     TouchArea {
@@ -27,110 +33,121 @@ export component AboutDialog inherits Rectangle {
         }
     }
 
-    Rectangle {
-        width: 400px;
-        height: 450px;
+    forward-focus: scope;
 
-        opacity: open-progress;
-        transform-scale-x: 0.95 + (open-progress * 0.05);
-        transform-scale-y: self.transform-scale-x;
+    scope := FocusScope {
+        KeyBinding {
+            keys: @keys(Escape);
+            activated => {
+                root.show = false;
+            }
+        }
 
-        background: Palette.background;
-        border-width: 1px;
-        border-color: Palette.border;
-        border-radius: 8px;
+        Rectangle {
+            width: 400px;
+            height: 450px;
 
-        drop-shadow-blur: 16px;
-        drop-shadow-offset-y: 8px;
-        drop-shadow-color: Palette.color-scheme == ColorScheme.dark ? rgba(0, 0, 0, 0.26) : rgba(0, 0, 0, 0.14);
+            opacity: open-progress;
+            transform-scale-x: 0.95 + (open-progress * 0.05);
+            transform-scale-y: self.transform-scale-x;
 
-        // Block events from falling through to the background dismiss area
-        TouchArea { }
+            background: Palette.background;
+            border-width: 1px;
+            border-color: Palette.border;
+            border-radius: 8px;
 
-        VerticalBox {
-            padding: 0px;
-            padding-bottom: 8px;
-            spacing: 10px;
+            drop-shadow-blur: 16px;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-color: Palette.color-scheme == ColorScheme.dark ? rgba(0, 0, 0, 0.26) : rgba(0, 0, 0, 0.14);
 
-            Rectangle {
-                background: Palette.control-background;
-                border-width: 1px;
-                border-color: Palette.border;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
-                vertical-stretch: 1;
+            // Block events from falling through to the background dismiss area
+            TouchArea { }
 
-                VerticalLayout {
-                    padding: 20px;
-                    spacing: 15px;
-                    HorizontalBox {
-                        alignment: center;
-                        padding: 0;
-                        Image {
-                            source: @image-url("../assets/logo.svg");
-                            width: 150px;
-                            height: 150px;
-                            horizontal-alignment: center;
-                            image-rendering: pixelated;
+            VerticalBox {
+                padding: 0px;
+                padding-bottom: 8px;
+                spacing: 10px;
+
+                Rectangle {
+                    background: Palette.control-background;
+                    border-width: 1px;
+                    border-color: Palette.border;
+                    border-top-left-radius: 8px;
+                    border-top-right-radius: 8px;
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 15px;
+                        HorizontalBox {
+                            alignment: center;
+                            padding: 0;
+                            Image {
+                                source: @image-url("../assets/logo.svg");
+                                width: 150px;
+                                height: 150px;
+                                horizontal-alignment: center;
+                                image-rendering: pixelated;
+                            }
                         }
-                    }
 
-                    VerticalBox {
-                        padding: 0;
-                        spacing: 5px;
+                        VerticalBox {
+                            padding: 0;
+                            spacing: 5px;
+
+                            Text {
+                                text: "Bouwer";
+                                font-size: 24px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                color: Palette.foreground;
+                            }
+
+                            Text {
+                                text: root.version;
+                                color: Palette.foreground;
+                                font-size: 14px;
+                                horizontal-alignment: center;
+                            }
+                        }
 
                         Text {
-                            text: "Bouwer";
-                            font-size: 24px;
-                            font-weight: 700;
+                            text: "A simple interface for building custom OpenWrt firmware images using the official image builders.";
                             horizontal-alignment: center;
-                            color: Palette.foreground;
-                        }
-
-                        Text {
-                            text: root.version;
-                            color: Palette.foreground;
-                            font-size: 14px;
-                            horizontal-alignment: center;
-                        }
-                    }
-
-                    Text {
-                        text: "A simple interface for building custom OpenWrt firmware images using the official image builders.";
-                        horizontal-alignment: center;
-                        wrap: word-wrap;
-                    }
-
-                    Text {
-                        text: "Copyright © 2026 George Sapkin";
-                        horizontal-alignment: center;
-                        wrap: word-wrap;
-                    }
-
-                    link_touch := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            Platform.open-url("https://github.com/georgesapkin/bouwer");
-                        }
-                        Text {
-                            text: "github.com/georgesapkin/bouwer";
-                            color: link_touch.has-hover ? Palette.accent-background : Palette.foreground;
                             wrap: word-wrap;
+                        }
+
+                        Text {
+                            text: "Copyright © 2026 George Sapkin";
                             horizontal-alignment: center;
-                            animate color { duration: 100ms; }
+                            wrap: word-wrap;
+                        }
+
+                        link_touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                Platform.open-url("https://github.com/georgesapkin/bouwer");
+                            }
+                            Text {
+                                text: "github.com/georgesapkin/bouwer";
+                                color: link_touch.has-hover ? Palette.accent-background : Palette.foreground;
+                                wrap: word-wrap;
+                                horizontal-alignment: center;
+                                animate color { duration: 100ms; }
+                            }
                         }
                     }
                 }
-            }
 
-            HorizontalBox {
-                alignment: center;
+                HorizontalBox {
+                    alignment: center;
 
-                Button {
-                    text: "Close";
-                    primary: true;
-                    clicked => {
-                        root.show = false;
+                    close_button := Button {
+                        text: "Close";
+                        primary: true;
+                        clicked => {
+                            root.show = false;
+                        }
                     }
                 }
             }
