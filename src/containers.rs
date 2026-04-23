@@ -18,7 +18,7 @@ use bollard::query_parameters::{
     RemoveContainerOptions, RemoveImageOptions, StartContainerOptions, WaitContainerOptions,
 };
 use bollard::service::HostConfig;
-use futures_util::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt, TryStreamExt};
 use tokio::fs;
 
 pub struct Volume {
@@ -73,20 +73,17 @@ where
 /// Extension trait for streams of bollard `LogOutput` results to easily read
 /// them into a `String`.
 pub trait LogStreamExt: Stream<Item = Result<LogOutput, BollardError>> {
-    async fn read_to_string(mut self) -> Result<String, BollardError>
+    async fn read_to_string(self) -> Result<String, BollardError>
     where
         Self: Sized + Unpin,
     {
-        let mut output = String::new();
-        while let Some(log) = self.next().await {
-            match log? {
-                LogOutput::StdOut { message } | LogOutput::StdErr { message } => {
-                    output.push_str(&String::from_utf8_lossy(&message));
-                }
-                _ => {}
+        self.try_fold(String::new(), |mut acc, log| async move {
+            if let LogOutput::StdOut { message } | LogOutput::StdErr { message } = log {
+                acc.push_str(&String::from_utf8_lossy(&message));
             }
-        }
-        Ok(output)
+            Ok(acc)
+        })
+        .await
     }
 }
 
