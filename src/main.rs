@@ -525,53 +525,44 @@ fn on_download_builder(
             let mut layers = HashMap::<String, (i64, i64)>::new();
 
             while let Some(pull_result) = stream.next().await {
-                match pull_result {
-                    Ok(info) => {
-                        if let (Some(id), Some(pd)) = (info.id, info.progress_detail.as_ref())
-                            && let (Some(current), Some(total)) = (pd.current, pd.total)
-                            && total > 0
-                        {
-                            layers.insert(id, (current, total));
-                        }
+                let Ok(info) = pull_result else {
+                    let msg = format!("Pull error: {}", pull_result.unwrap_err());
+                    eprintln!("{msg}");
+                    ui_weak.set_notification(Notification::Error, Some(&msg));
+                    break;
+                };
 
-                        let total_current: i64 = layers.values().map(|&(c, _)| c).sum();
-                        let total_sum: i64 = layers.values().map(|&(_, t)| t).sum();
-
-                        if total_sum > 0 {
-                            current_progress =
-                                current_progress.max(total_current as f32 / total_sum as f32);
-                        } else if info.progress_detail.is_none() {
-                            current_progress = (current_progress + 0.001).min(0.99);
-                        }
-
-                        let status_text: String = if total_sum > 0 {
-                            let current_mib = total_current as f64 / SIZE_MB;
-                            let total_mib = total_sum as f64 / SIZE_MB;
-                            format!(
-                                "Downloading image builder: {current_mib:.2} / {total_mib:.2} MB"
-                            )
-                        } else {
-                            "Downloading image builder".to_string()
-                        };
-
-                        if !status_text.is_empty() {
-                            use std::io::{self, Write};
-                            print!("\r\x1b[K{status_text}");
-                            let _ = io::stdout().flush();
-                        }
-
-                        ui_weak.switch_state_to(UIState::DownloadingBuilder {
-                            progress: Some(current_progress),
-                            status: Some(status_text),
-                        });
-                    }
-                    Err(e) => {
-                        let msg = format!("Pull error: {e}");
-                        eprintln!("{msg}");
-                        ui_weak.set_notification(Notification::Error, Some(&msg));
-                        break;
-                    }
+                if let (Some(id), Some(pd)) = (info.id, info.progress_detail.as_ref())
+                    && let (Some(current), Some(total)) = (pd.current, pd.total)
+                    && total > 0
+                {
+                    layers.insert(id, (current, total));
                 }
+
+                let total_current: i64 = layers.values().map(|&(c, _)| c).sum();
+                let total_sum: i64 = layers.values().map(|&(_, t)| t).sum();
+
+                let status_text = if total_sum > 0 {
+                    current_progress =
+                        current_progress.max(total_current as f32 / total_sum as f32);
+                    let current_mib = total_current as f64 / SIZE_MB;
+                    let total_mib = total_sum as f64 / SIZE_MB;
+                    format!("Downloading image builder: {current_mib:.2} / {total_mib:.2} MB")
+                } else {
+                    current_progress = (current_progress + 0.001).min(0.99);
+                    "Downloading image builder".to_string()
+                };
+
+                if !status_text.is_empty() {
+                    use std::io::{self, Write};
+                    print!("\r\x1b[K{status_text}");
+                    let _ = io::stdout().flush();
+                }
+
+                ui_weak.switch_state_to(UIState::DownloadingBuilder {
+                    progress: Some(current_progress),
+                    status: Some(status_text),
+                });
             }
 
             println!();
@@ -954,13 +945,12 @@ fn on_profile_selected(
     get_image_builder: &GetImageBuilderFn,
     data: &ProfileData,
 ) {
-    let profile = core
+    let Some(profile) = core
         .read()
         .expect("Core lock poisoned")
         .profiles
-        .find_by_display_name(&data.name);
-
-    let Some(profile) = profile else {
+        .find_by_display_name(&data.name)
+    else {
         return;
     };
 
@@ -1465,27 +1455,27 @@ async fn refresh_downloaded_builders(ui_weak: slint::Weak<AppWindow>) {
             let size_str = human_bytes(size as f64);
             let image_tag: ImageTag = tag_str.into();
 
-            if let (Ok(target), Ok(version)) =
+            let (Ok(target), Ok(version)) =
                 (Target::try_from(&image_tag), Version::try_from(&image_tag))
-            {
+            else {
+                let shared_tag: SharedString = image_tag.as_ref().into();
                 return (
-                    Some((version.clone(), target.clone())),
+                    None,
                     ImageBuilderItem {
-                        tag: image_tag.as_ref().into(),
-                        version: version.to_string().into(),
-                        target: target.to_string().into(),
+                        tag: shared_tag.clone(),
+                        version: shared_tag,
+                        target: SharedString::default(),
                         size: size_str.into(),
                     },
                 );
-            }
+            };
 
-            let shared_tag: SharedString = image_tag.as_ref().into();
             (
-                None,
+                Some((version.clone(), target.clone())),
                 ImageBuilderItem {
-                    tag: shared_tag.clone(),
-                    version: shared_tag,
-                    target: SharedString::default(),
+                    tag: image_tag.as_ref().into(),
+                    version: version.to_string().into(),
+                    target: target.to_string().into(),
                     size: size_str.into(),
                 },
             )
