@@ -27,6 +27,7 @@ Bouwer means builder in Dutch.
   settings for newer OpenWrt versions.
 - Caches OpenWrt profile metadata, packages, and image builders to speed up
   subsequent operations.
+- Fetches package lists from actual devices via SSH. Supports both apk and opkg.
 - Manages downloaded image builders and allows removing them from within the
   app.
 - Supports OpenWrt version 21.02 and above, including release candidates.
@@ -76,7 +77,11 @@ Once an image builder is downloaded, you can customize the firmware and press
 _Build firmware_. When done, click _Open build folder_ to locate your
 freshly-built firmware images.
 
-You can save your customization using _Save preset_ to be reused for later
+You can load the package list from a device via SSH by clicking the _Fetch
+package list_ button in _General settings_. The device must match the selected
+profile.
+
+You can save your customizations using _Save preset_ to be reused for later
 builds.
 
 > [!IMPORTANT]
@@ -110,6 +115,7 @@ The executable will be located in `target/release/`.
 
 - After loading a preset, the profile text box loses the visual focus indicator,
   even though it's focused.
+- On Windows there's no ssh-agent, so SSH authentication is password-only.
 
 ## License
 
