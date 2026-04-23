@@ -82,7 +82,7 @@ impl ImageBuilder {
         self.containers.image_exists(&self.image_tag).await
     }
 
-    pub async fn fetch_package_list(&self, profile_id: &ProfileId) -> anyhow::Result<String> {
+    pub async fn fetch_package_list(&self, profile_id: &ProfileId) -> anyhow::Result<PackageList> {
         let stdout = {
             let stream = self
                 .containers
@@ -113,7 +113,7 @@ impl ImageBuilder {
         }
 
         let result = format!("{default_pkgs} {device_pkgs}");
-        Ok(result)
+        Ok(result.as_str().into())
     }
 
     pub async fn wait_until_ready(&self) -> bool {
@@ -150,9 +150,13 @@ mod tests {
 
     #[test]
     fn test_build_args_minimal() {
+        let original_packages: PackageList = "pkg1 pkg2 pkg3".into();
+        let mut packages: PackageList = "pkg1 pkg3".into();
+        packages.extend(&original_packages, false);
+
         let args = BuildArgs {
             profile_id: "test-profile".into(),
-            packages: "pkg1 pkg2".into(),
+            packages,
             extra_image_name: None,
             rootfs_size: None,
             disabled_services: None,
@@ -166,16 +170,20 @@ mod tests {
                 "make".to_string(),
                 "image".to_string(),
                 "PROFILE=test-profile".to_string(),
-                "PACKAGES=pkg1 pkg2".to_string(),
+                "PACKAGES=pkg1 pkg3 -pkg2".to_string(),
             ]
         );
     }
 
     #[test]
     fn test_build_args_full() {
+        let original_packages: PackageList = "pkg1 pkg2 pkg3".into();
+        let mut packages: PackageList = "pkg1 pkg3".into();
+        packages.extend(&original_packages, false);
+
         let args = BuildArgs {
             profile_id: "test-profile".into(),
-            packages: "pkg1 pkg2".into(),
+            packages,
             extra_image_name: Some("custom-name"),
             rootfs_size: Some(256),
             disabled_services: Some("service1 service2"),
@@ -189,7 +197,7 @@ mod tests {
                 "make".to_string(),
                 "image".to_string(),
                 "PROFILE=test-profile".to_string(),
-                "PACKAGES=pkg1 pkg2".to_string(),
+                "PACKAGES=pkg1 pkg3 -pkg2".to_string(),
                 "EXTRA_IMAGE_NAME=custom-name".to_string(),
                 "ROOTFS_PARTSIZE=256".to_string(),
                 "DISABLED_SERVICES=service1 service2".to_string(),

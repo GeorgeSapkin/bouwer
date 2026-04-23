@@ -277,7 +277,7 @@ fn on_build(
 
     let packages = {
         let mut packages = PackageList::from(data.packages.as_str());
-        packages.extend(&core.read().expect("Core lock poisoned").packages);
+        packages.extend(&core.read().expect("Core lock poisoned").packages, false);
         packages
     };
 
@@ -1017,7 +1017,9 @@ async fn fetch_and_update_packages(
 
     let packages = match packages {
         Ok(p) => {
-            let original_packages = PackageList::from(format!("{p} {EXTRA_PACKAGES}"));
+            let mut original_packages = p;
+            original_packages.extend(&PackageList::from(EXTRA_PACKAGES), true);
+
             if let Ok(mut c) = core.write() {
                 c.packages.clone_from(&original_packages);
             }
@@ -1055,7 +1057,7 @@ async fn fetch_packages_for_profile(
     version: &Version,
     target: &Target,
     profile_id: &ProfileId,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<PackageList> {
     if let Some(packages) = cache.get_packages(version, target, profile_id).await {
         return Ok(packages);
     }
@@ -1063,12 +1065,12 @@ async fn fetch_packages_for_profile(
     println!("Fetching package info for {profile_id} from {version} and {target}");
 
     let image_builder = get_image_builder(version, target)?;
-    let result = image_builder.fetch_package_list(profile_id).await?;
+    let packages = image_builder.fetch_package_list(profile_id).await?;
 
     cache
-        .store_packages(version, target, profile_id, &result)
+        .store_packages(version, target, profile_id, &packages)
         .await;
-    Ok(result)
+    Ok(packages)
 }
 
 fn filter_versions(versions: &[Version], show_rcs: bool) -> Vec<SharedString> {
@@ -1087,7 +1089,7 @@ fn get_build_command_preview(core: &SharedCore, data: &BuildData) -> String {
 
     let packages = {
         let mut packages = PackageList::from(data.packages.as_str());
-        packages.extend(&core.read().expect("Core lock poisoned").packages);
+        packages.extend(&core.read().expect("Core lock poisoned").packages, false);
         packages
     };
 
@@ -1200,16 +1202,16 @@ async fn load_preset_from_path(
     }
 
     // Load original packages for comparison
-    let fetched_packages =
+    let mut original_packages =
         fetch_packages_for_profile(&cache, get_image_builder, version, &target, &profile_id)
             .await
             .unwrap_or_else(|e| {
                 eprintln!("Error fetching packages for preset: {e}");
-                EXTRA_PACKAGES.to_string()
+                PackageList::default()
             });
 
     // TODO: Disable build when there are no packages
-    let original_packages = PackageList::from(format!("{fetched_packages} {EXTRA_PACKAGES}"));
+    original_packages.extend(&PackageList::from(EXTRA_PACKAGES), true);
     let removed_packages = original_packages.diff(&preset.packages).to_string();
 
     if let Ok(mut c) = core.write() {

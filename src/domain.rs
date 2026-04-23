@@ -137,15 +137,15 @@ impl PackageList {
             .collect()
     }
 
-    /// Extends self with packages from other. Ignores enabled state.
-    pub fn extend(&mut self, other: &PackageList) {
+    /// Extends self with packages from other. Overrides enabled state.
+    pub fn extend(&mut self, other: &PackageList, enabled: bool) {
         let self_names: HashSet<&str> = self.iter().map(|p| p.name.as_str()).collect();
         let extras: Vec<Package> = other
             .iter()
             .filter(|p| !self_names.contains(p.name.as_str()))
             .map(|p| Package {
                 name: p.name.clone(),
-                enabled: false,
+                enabled,
             })
             .collect();
         self.0.extend(extras);
@@ -961,47 +961,84 @@ mod tests {
 
     #[test]
     fn test_package_list_diff() {
-        let list1 = PackageList::from("pkg1 pkg2 pkg3");
-        let list2 = PackageList::from("pkg2 pkg4");
+        let left = PackageList::from("pkg1 pkg2 pkg3");
+        let right = PackageList::from("pkg2 pkg4");
 
-        let diff = list1.diff(&list2);
+        let diff = left.diff(&right);
 
         // pkg1 and pkg3 should remain from list1
         assert_eq!(diff.len(), 2);
         assert_eq!(diff.to_string(), "pkg1 pkg3");
 
+        let empty = PackageList::default();
+        assert_eq!(left.diff(&empty).to_string(), "pkg1 pkg2 pkg3");
+        assert_eq!(empty.diff(&left).to_string(), "");
+
         // Test ignoring enabled state in both lists
-        let list3 = PackageList::from("pkg1 -pkg2");
-        let list4 = PackageList::from("pkg2 pkg5");
-        let diff2 = list3.diff(&list4);
+        let left = PackageList::from("pkg1 -pkg2");
+        let right = PackageList::from("pkg2 pkg5");
+        let diff = left.diff(&right);
 
         // pkg2 is removed even if disabled in list3 or enabled in list4
-        assert_eq!(diff2.to_string(), "pkg1");
-
-        let empty = PackageList::default();
-        assert_eq!(list1.diff(&empty).to_string(), "pkg1 pkg2 pkg3");
-        assert_eq!(empty.diff(&list1).to_string(), "");
+        assert_eq!(diff.to_string(), "pkg1");
     }
 
     #[test]
-    fn test_package_list_extend() {
-        let mut list1 = PackageList::from("pkg1 -pkg2");
-        let list2 = PackageList::from("pkg2 pkg3");
+    fn test_package_list_extend_enabled() {
+        let mut left = PackageList::from("pkg1 -pkg2");
+        let right = PackageList::from("pkg2 pkg3");
 
-        list1.extend(&list2);
+        left.extend(&right, true);
+        assert_eq!(left.len(), 3);
 
-        // pkg1 (enabled, from list1)
-        // pkg2 (disabled, from list1)
-        // pkg3 (disabled, from list2 via extend)
-        assert_eq!(list1.len(), 3);
+        let p1 = left.iter().find(|p| p.name == "pkg1").unwrap();
+        let p2 = left.iter().find(|p| p.name == "pkg2").unwrap();
+        let p3 = left.iter().find(|p| p.name == "pkg3").unwrap();
 
-        let p1 = list1.iter().find(|p| p.name == "pkg1").unwrap();
-        let p2 = list1.iter().find(|p| p.name == "pkg2").unwrap();
-        let p3 = list1.iter().find(|p| p.name == "pkg3").unwrap();
+        assert!(p1.enabled);
+        assert!(!p2.enabled);
+        assert!(p3.enabled);
+
+        let mut left: PackageList = "pkg1 pkg3".into();
+        let right: PackageList = "pkg1 pkg2 pkg3".into();
+        left.extend(&right, true);
+
+        let p1 = left.iter().find(|p| p.name == "pkg1").unwrap();
+        let p2 = left.iter().find(|p| p.name == "pkg2").unwrap();
+        let p3 = left.iter().find(|p| p.name == "pkg3").unwrap();
+
+        assert!(p1.enabled);
+        assert!(p2.enabled);
+        assert!(p3.enabled);
+    }
+
+    #[test]
+    fn test_package_list_extend_disabled() {
+        let mut left = PackageList::from("pkg1 -pkg2");
+        let right = PackageList::from("pkg2 pkg3");
+
+        left.extend(&right, false);
+        assert_eq!(left.len(), 3);
+
+        let p1 = left.iter().find(|p| p.name == "pkg1").unwrap();
+        let p2 = left.iter().find(|p| p.name == "pkg2").unwrap();
+        let p3 = left.iter().find(|p| p.name == "pkg3").unwrap();
 
         assert!(p1.enabled);
         assert!(!p2.enabled);
         assert!(!p3.enabled);
+
+        let mut left: PackageList = "pkg1 pkg3".into();
+        let right: PackageList = "pkg1 pkg2 pkg3".into();
+        left.extend(&right, false);
+
+        let p1 = left.iter().find(|p| p.name == "pkg1").unwrap();
+        let p2 = left.iter().find(|p| p.name == "pkg2").unwrap();
+        let p3 = left.iter().find(|p| p.name == "pkg3").unwrap();
+
+        assert!(p1.enabled);
+        assert!(!p2.enabled);
+        assert!(p3.enabled);
     }
 
     #[test]

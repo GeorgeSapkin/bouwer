@@ -2,13 +2,13 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::domain::{Profile, ProfileId, Target, Version};
+use crate::domain::{PackageList, Profile, ProfileId, Target, Version};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize)]
 struct PackageCacheRecord {
-    packages: String,
+    packages: PackageList,
 }
 
 #[derive(Clone)]
@@ -47,7 +47,7 @@ impl MetadataCache {
         version: &Version,
         target: &Target,
         profile_id: &ProfileId,
-    ) -> Option<String> {
+    ) -> Option<PackageList> {
         let cache_file = self.get_package_path(version, target, profile_id);
         let content = tokio::fs::read_to_string(&cache_file).await.ok()?;
         let cached = serde_json::from_str::<PackageCacheRecord>(&content).ok()?;
@@ -61,7 +61,7 @@ impl MetadataCache {
         version: &Version,
         target: &Target,
         profile_id: &ProfileId,
-        packages: &str,
+        packages: &PackageList,
     ) {
         if packages.is_empty() {
             return;
@@ -70,7 +70,7 @@ impl MetadataCache {
         let _ = tokio::fs::create_dir_all(&self.cache_path).await;
         let cache_file = self.get_package_path(version, target, profile_id);
         let cache_data = PackageCacheRecord {
-            packages: packages.to_string(),
+            packages: packages.clone(),
         };
         if let Ok(content) = serde_json::to_string(&cache_data) {
             println!("Caching packages to {}", cache_file.display());
