@@ -285,13 +285,13 @@ impl Display for ProfileId {
 
 impl From<&str> for ProfileId {
     fn from(s: &str) -> Self {
-        Self(s.to_string())
+        Self(s.replace(',', "_"))
     }
 }
 
 impl From<String> for ProfileId {
     fn from(s: String) -> Self {
-        Self(s)
+        Self(s.replace(',', "_"))
     }
 }
 
@@ -635,6 +635,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_profile_id_normalization() {
+        let cases = [
+            ("zyxel,ex5601-t0-ubootmod", "zyxel_ex5601-t0-ubootmod"),
+            ("zyxel_ex5601-t0-ubootmod", "zyxel_ex5601-t0-ubootmod"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(ProfileId::from(input).0, expected);
+        }
+    }
+
+    #[test]
     fn test_version_parsing_and_display() {
         let cases = [
             ("23.05.2", 23, 5, 2, None),
@@ -727,7 +738,7 @@ mod tests {
     fn test_profile_filtering() {
         let profiles = [
             Profile {
-                id: ProfileId("zyxel_ex5601-t0-ubootmod".into()),
+                id: "zyxel,ex5601-t0-ubootmod".into(),
                 titles: vec![ProfileTitle {
                     model: Some("EX5601-T0".into()),
                     vendor: Some("Zyxel".into()),
@@ -737,7 +748,7 @@ mod tests {
                 target: Target::from("mediatek/filogic"),
             },
             Profile {
-                id: ProfileId("generic".into()),
+                id: "generic".into(),
                 titles: vec![ProfileTitle {
                     model: Some("x86/64".into()),
                     vendor: Some("Generic".into()),
@@ -781,8 +792,8 @@ mod tests {
                 major: 23,
                 minor: 5,
             },
-            target: Target::from("ath79/generic"),
-            profile_id: ProfileId("id".into()),
+            target: "ath79/generic".into(),
+            profile_id: "id".into(),
             extra_image_name: "openssl".into(),
             rootfs_size: 5000,
             packages: "luci".into(),
@@ -807,8 +818,8 @@ mod tests {
                 major: 23,
                 minor: 5,
             },
-            target: Target::from("ath79/generic"),
-            profile_id: ProfileId("id".into()),
+            target: "ath79/generic".into(),
+            profile_id: "id".into(),
             extra_image_name: String::new(),
             rootfs_size: 0,
             packages: "luci".into(),

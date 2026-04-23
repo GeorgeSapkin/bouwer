@@ -30,6 +30,7 @@ export component AboutDialog inherits Rectangle {
     Rectangle {
         width: 400px;
         height: 450px;
+
         opacity: open-progress;
         transform-scale-x: 0.95 + (open-progress * 0.05);
         transform-scale-y: self.transform-scale-x;
@@ -124,6 +125,7 @@ export component AboutDialog inherits Rectangle {
 
             HorizontalBox {
                 alignment: center;
+
                 Button {
                     text: "Close";
                     primary: true;

@@ -19,6 +19,10 @@ pub enum UIState {
         progress: Option<f32>,
         status: Option<String>,
     },
+    FetchingFromDevice {
+        progress: Option<f32>,
+        status: Option<String>,
+    },
     DeletingBuilder,
     FetchingPackages,
     LoadingPreset,
@@ -128,6 +132,7 @@ impl AppState {
                 }
             }
             UIState::Building { progress, status }
+            | UIState::FetchingFromDevice { progress, status }
             | UIState::DownloadingBuilder { progress, status } => {
                 self.busy = true;
                 if let Some(p) = progress {

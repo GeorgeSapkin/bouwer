@@ -1,0 +1,171 @@
+// Copyright (C) 2026 George Sapkin
+//
+// SPDX-License-Identifier: GPL-3.0-only
+
+import {
+    Button,
+    ComboBox,
+    HorizontalBox,
+    LineEdit,
+    Palette,
+    VerticalBox,
+} from "std-widgets.slint";
+
+export component DeviceDialog inherits Rectangle {
+    in-out property <bool> show;
+    in property <[string]> identities;
+    in-out property <string> identity;
+
+    property <float> open-progress: show ? 1.0 : 0.0;
+
+    callback fetch_requested(string, string, string, string);
+    callback identities_requested();
+
+    visible: open-progress > 0.01;
+    background: rgba(0, 0, 0, 0.4 * open-progress);
+
+    animate open-progress {
+        duration: 250ms;
+        easing: ease-in-out;
+    }
+
+    changed show => {
+        if (show) {
+            root.identities_requested();
+        }
+    }
+
+    // Block events to underlying UI and provide light-dismiss (click outside
+    // to close)
+    TouchArea {
+        clicked => {
+            root.show = false;
+        }
+    }
+
+    Rectangle {
+        height: 460px;
+        width: 360px;
+
+        opacity: open-progress;
+        transform-scale-x: 0.95 + (open-progress * 0.05);
+        transform-scale-y: self.transform-scale-x;
+
+        background: Palette.background;
+        border-width: 1px;
+        border-color: Palette.border;
+        border-radius: 8px;
+
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: Palette.color-scheme == ColorScheme.dark ? rgba(0, 0, 0, 0.26) : rgba(0, 0, 0, 0.14);
+
+        // Block events from falling through to the background dismiss area
+        TouchArea { }
+
+        VerticalBox {
+            padding: 0px;
+            spacing: 0px;
+
+            Rectangle {
+                background: Palette.control-background;
+                border-width: 1px;
+                border-color: Palette.border;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                vertical-stretch: 1;
+
+                VerticalBox {
+                    padding: 16px;
+
+                    Text {
+                        text: "Fetch package list from device";
+                        font-size: 18px;
+                        font-weight: 700;
+                    }
+
+                    Text {
+                        text: "Hostname or IP:";
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
+
+                    host_input := LineEdit {
+                        text: "192.168.1.1";
+                        placeholder-text: "192.168.1.1";
+                    }
+
+                    Text {
+                        text: "Username:";
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
+
+                    user_input := LineEdit {
+                        text: "root";
+                        placeholder-text: "root";
+                    }
+
+                    Text {
+                        text: "Key:";
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
+
+                    ComboBox {
+                        model: root.identities;
+                        enabled: root.identities.length > 0;
+                        current-value <=> root.identity;
+                    }
+
+                    Text {
+                        text: "Password:";
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
+
+                    pass_input := LineEdit {
+                        input-type: password;
+                        placeholder-text: "password";
+                    }
+
+                    Text {
+                        overflow: TextOverflow.clip;
+                        text: "If a password and a key are not specified, Bouwer will try to authenticate using a username only first, and then via the ssh-agent.";
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        wrap: TextWrap.word-wrap;
+                    }
+                }
+            }
+
+            HorizontalBox {
+                alignment: end;
+                padding: 16px;
+
+                Button {
+                    text: "Cancel";
+                    clicked => {
+                        root.show = false;
+                    }
+                }
+
+                Button {
+                    text: "Fetch package list";
+                    primary: true;
+                    enabled: host_input.text != "" && user_input.text != "";
+
+                    clicked => {
+                        root.fetch_requested(
+                            host_input.text,
+                            user_input.text,
+                            pass_input.text,
+                            root.identity,
+                        );
+                        root.show = false;
+                    }
+                }
+            }
+        }
+    }
+}

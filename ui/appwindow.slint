@@ -22,6 +22,7 @@ import { AboutDialog } from "about.slint";
 import { ImageBuilderItem, ImageBuilderList } from "builderlist.slint";
 import { EditableComboBox } from "combobox.slint";
 import { ImageButton } from "imagebutton.slint";
+import { DeviceDialog } from "device.slint";
 import { Notification } from "notification.slint";
 import { Tooltip } from "tooltip.slint";
 
@@ -57,6 +58,8 @@ export struct AppState {
     selected_version: string,
     show_about: bool,
     show_rcs: bool,
+    show_device_dialog: bool,
+    ssh_agent_identities: [string],
     status_text: string,
     version: string,
     versions: [string],
@@ -86,6 +89,16 @@ export struct DeleteBuilderData {
     profile_id: string,
 }
 
+export struct FetchFromDeviceData {
+    version: string,
+    target: string,
+    profile_id: string,
+    host: string,
+    user: string,
+    identity: string,
+    password: string,
+}
+
 export struct ProfileData {
     version: string,
     name: string,
@@ -112,6 +125,8 @@ export global StateBridge {
     callback build_requested(BuildData);
     callback delete_builder_requested(DeleteBuilderData);
     callback download_builder_requested(DownloadBuilderData);
+    callback fetch_from_device_requested(FetchFromDeviceData);
+    callback fetch_ssh_agent_identities_requested();
     callback load_preset_requested(string);
     callback open_build_folder_requested(string);
     callback packages_edited(string);
@@ -154,6 +169,26 @@ export component AppWindow inherits Window {
     icon: @image-url("../assets/logo_no_shadow.svg");
     min-width: 700px;
     min-height: 700px;
+
+    DeviceDialog {
+        show <=> root.state.show_device_dialog;
+        identities: root.state.ssh_agent_identities;
+        z: 1100;
+        identities_requested() => {
+            StateBridge.fetch_ssh_agent_identities_requested();
+        }
+        fetch_requested(host, user, password, identity) => {
+            StateBridge.fetch_from_device_requested({
+                version: root.state.selected_version,
+                target: root.state.selected_target,
+                profile_id: root.state.selected_id,
+                host: host,
+                user: user,
+                identity: identity,
+                password: password,
+            });
+        }
+    }
 
     AboutDialog {
         show <=> StateBridge.state.show_about;
@@ -397,26 +432,36 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    packages_rect := Rectangle {
+                    HorizontalBox {
+                        padding: 0px;
                         z: 90;
-                        HorizontalBox {
-                            padding: 0px;
+                        alignment: space-between;
+                        packages_rect := Rectangle {
                             Text {
                                 text: "Packages:";
                                 font-size: 14px;
-                                horizontal-alignment: left;
+                                vertical-alignment: center;
+                            }
+
+                            packages_touch := TouchArea {
+                                width: parent.width;
+                                height: parent.height;
+                                packages_tooltip := Tooltip {
+                                    text: "Space-separated list of packages to include in the firmware";
+                                    active: packages_touch.has-hover;
+                                    x: 0;
+                                    y: parent.height + 8px;
+                                }
                             }
                         }
 
-                        packages_touch := TouchArea {
-                            width: packages_rect.width;
-                            height: packages_rect.height;
-
-                            packages_tooltip := Tooltip {
-                                text: "Space-separated list of packages to include in the firmware";
-                                active: packages_touch.has-hover;
-                                x: 0;
-                                y: parent.height + 8px;
+                        ImageButton {
+                            source: @image-url("../assets/router_from.svg");
+                            enabled: !root.state.busy && root.state.image_exists;
+                            tooltip_text: "Fetch package list from a device via SSH";
+                            tooltip_alignment: LayoutAlignment.end;
+                            clicked => {
+                                root.state.show_device_dialog = true;
                             }
                         }
                     }
