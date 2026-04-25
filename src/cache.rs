@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::domain::{PackageList, Profile, ProfileId, Target, Version};
+use crate::domain::{PackageList, ProfileId, ProfileList, Target, Version};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -23,16 +23,16 @@ impl MetadataCache {
         }
     }
 
-    pub async fn get_profiles(&self, version: &Version) -> Option<Vec<Profile>> {
+    pub async fn get_profiles(&self, version: &Version) -> Option<ProfileList> {
         let cache_file = self.get_profile_path(version);
         let content = tokio::fs::read_to_string(&cache_file).await.ok()?;
-        let profiles = serde_json::from_str::<Vec<Profile>>(&content).ok()?;
+        let profiles = serde_json::from_str::<ProfileList>(&content).ok()?;
 
         println!("Using cached profiles from {}", cache_file.display());
         Some(profiles)
     }
 
-    pub async fn store_profiles(&self, version: &Version, profiles: &[Profile]) {
+    pub async fn store_profiles(&self, version: &Version, profiles: &ProfileList) {
         let _ = tokio::fs::create_dir_all(&self.cache_path).await;
         let cache_file = self.get_profile_path(version);
 

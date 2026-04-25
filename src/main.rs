@@ -31,6 +31,7 @@ mod config;
 mod containers;
 mod device;
 mod domain;
+mod search;
 mod ssh;
 mod state;
 
@@ -40,7 +41,7 @@ use client::OpenWrtClient;
 use config::Config;
 use containers::Containers;
 use device::Device;
-use domain::{ImageTag, PackageList, Preset, Profile, ProfileId, ProfileSliceExt, Target, Version};
+use domain::{ImageTag, PackageList, Preset, ProfileId, ProfileList, Target, Version};
 use ssh::{Ssh, SshOptions};
 use state::{AppWindowExt, AppWindowWeakExt, Notification, UIState};
 
@@ -68,7 +69,7 @@ pub struct AppCore {
     pub config: Config,
     /// Selected profile packages
     pub packages: PackageList,
-    pub profiles: Vec<Profile>,
+    pub profiles: ProfileList,
     pub versions: Vec<Version>,
 }
 
@@ -945,12 +946,8 @@ fn on_profile_selected(
     get_image_builder: &GetImageBuilderFn,
     data: &ProfileData,
 ) {
-    let Some(profile) = core
-        .read()
-        .expect("Core lock poisoned")
-        .profiles
-        .find_by_display_name(&data.name)
-    else {
+    let core_guard = core.read().expect("Core lock poisoned");
+    let Some(profile) = core_guard.profiles.find_by_display_name(&data.name) else {
         return;
     };
 
@@ -959,7 +956,7 @@ fn on_profile_selected(
         s.search_text = data.name;
         s.selected_id = profile.id.as_ref().into();
         s.selected_target = profile.target.to_string().into();
-        s.selected_model = profile.format_all_models().as_str().into();
+        s.selected_model = profile.format_all_models().into();
 
         s.switch_to(UIState::FetchingPackages);
     }));
@@ -1297,31 +1294,31 @@ async fn load_preset_from_path(
     get_image_builder: &GetImageBuilderFn,
     version: &Version,
 ) -> anyhow::Result<()> {
-    let content = tokio::fs::read_to_string(&path).await?;
-    let preset: Preset = serde_json::from_str(&content)?;
-
-    let found = {
-        let core = core.read().expect("Core lock poisoned");
-        core.profiles
-            .iter()
-            .find(|p| p.id == preset.profile_id && p.target == preset.target)
-            .map(|p| {
-                let name = p
-                    .format()
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| p.id.to_string());
-                (name, p.format_all_models(), p.target.clone())
-            })
+    let preset: Preset = {
+        let content = tokio::fs::read_to_string(&path).await?;
+        serde_json::from_str(&content)?
     };
 
-    let (name, model, target) = found.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Profile '{}' for target '{}' not found in current version",
-            preset.profile_id,
-            preset.target
-        )
-    })?;
+    let (name, model, target) = core
+        .read()
+        .expect("Core lock poisoned")
+        .profiles
+        .find_by_id_and_target(&preset.profile_id, &preset.target)
+        .map(|p| {
+            let name = p
+                .format_display_names()
+                .first()
+                .cloned()
+                .unwrap_or_else(|| p.id.to_string());
+            (name, p.format_all_models(), p.target.clone())
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Profile '{}' for target '{}' not found in current version",
+                preset.profile_id,
+                preset.target
+            )
+        })?;
 
     let profile_id = preset.profile_id.clone();
     ui_weak.update_state(clone!((profile_id, name, model, target), move |s| {

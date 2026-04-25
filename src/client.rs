@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::cache::MetadataCache;
-use crate::domain::{OpenWrtOverview, OpenWrtVersions, Profile, Version};
+use crate::domain::{OpenWrtOverview, OpenWrtVersions, ProfileList, Version};
 
 pub const USER_AGENT: &str = "BouwerOpenWrtFetcher/1.0";
 
@@ -21,20 +21,19 @@ impl OpenWrtClient {
         }
     }
 
-    pub async fn fetch_profiles(&self, version: &Version) -> anyhow::Result<Vec<Profile>> {
+    pub async fn fetch_profiles(&self, version: &Version) -> anyhow::Result<ProfileList> {
         if let Some(profiles) = self.cache.get_profiles(version).await {
             return Ok(profiles);
         }
 
         let url = format!("{}/releases/{version}/.overview.json", self.base_url);
         println!("Fetching profiles from {url}");
-        let profiles = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Profile>> {
-            let mut data: OpenWrtOverview = ureq::get(&url)
+        let profiles = tokio::task::spawn_blocking(move || -> anyhow::Result<ProfileList> {
+            let data: OpenWrtOverview = ureq::get(&url)
                 .header("User-Agent", USER_AGENT)
                 .call()?
                 .body_mut()
                 .read_json()?;
-            data.profiles.sort_by(|a, b| a.id.cmp(&b.id));
             Ok(data.profiles)
         })
         .await??;

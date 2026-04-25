@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::BuildData;
+use crate::search::{SearchIndex, SearchIndexBuilder};
 
 #[derive(Clone)]
 pub struct ImageTag(String);
@@ -61,7 +62,7 @@ impl From<String> for ImageTag {
 
 #[derive(Deserialize)]
 pub struct OpenWrtOverview {
-    pub profiles: Vec<Profile>,
+    pub profiles: ProfileList,
 }
 
 #[derive(Deserialize)]
@@ -261,7 +262,7 @@ impl From<BuildData> for Preset {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct ProfileId(String);
 
@@ -305,11 +306,8 @@ pub struct Profile {
 }
 
 impl Profile {
-    pub fn format(&self) -> Vec<String> {
-        self.titles
-            .iter()
-            .map(|t| format!("{t} ({})", self.id))
-            .collect()
+    pub fn new(id: ProfileId, titles: Vec<ProfileTitle>, target: Target) -> Self {
+        Self { id, titles, target }
     }
 
     pub fn format_all_models(&self) -> String {
@@ -321,34 +319,148 @@ impl Profile {
             .join(" / ")
     }
 
-    pub fn matches(&self, query: &str) -> bool {
-        self.id.0.to_lowercase().contains(query)
-            || self
-                .titles
-                .iter()
-                .any(|t| t.to_string().to_lowercase().contains(query))
-    }
-}
-
-pub trait ProfileSliceExt {
-    fn filter(&self, query: &str) -> Vec<String>;
-    fn find_by_display_name(&self, name: &str) -> Option<Profile>;
-}
-
-impl ProfileSliceExt for [Profile] {
-    fn filter(&self, query: &str) -> Vec<String> {
-        let query = query.trim().to_lowercase();
-        self.iter()
-            .filter(|p| p.matches(&query))
-            .flat_map(Profile::format)
+    pub fn format_display_names(&self) -> Vec<String> {
+        self.titles
+            .iter()
+            .map(|t| format!("{t} ({})", self.id))
             .collect()
     }
+}
 
-    fn find_by_display_name(&self, name: &str) -> Option<Profile> {
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(from = "Vec<Profile>", into = "Vec<Profile>")]
+pub struct ProfileList {
+    profiles: Vec<Profile>,
+
+    #[serde(skip)]
+    id_target_index: HashMap<(ProfileId, Target), u32>,
+
+    #[serde(skip)]
+    name_index: HashMap<String, u32>,
+
+    #[serde(skip)]
+    search_index: SearchIndex,
+}
+
+impl ProfileList {
+    /// Filters profiles based on a query string. Uses a Trie to find matches by
+    /// prefix in sub-linear time.
+    pub fn filter(&self, query: &str) -> Vec<String> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return Vec::new();
+        }
+
+        let mut tokens = query
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|s| !s.is_empty());
+        let Some(first) = tokens.next() else {
+            return Vec::new();
+        };
+
+        let mut results: Vec<_> = tokens
+            .fold(self.search_index.search(first), |mut acc, token| {
+                if !acc.is_empty() {
+                    acc.retain(|i| self.search_index.search(token).contains(i));
+                }
+                acc
+            })
+            .into_iter()
+            .filter_map(|idx| self.profiles.get(idx as usize))
+            .flat_map(Profile::format_display_names)
+            .collect();
+
+        results.sort_unstable();
+        results
+    }
+
+    /// Finds a profile by its exact display name.
+    pub fn find_by_display_name(&self, name: &str) -> Option<&Profile> {
         let name = name.trim().to_lowercase();
-        self.iter()
-            .find(|p| p.format().iter().any(|dn| dn.to_lowercase() == name))
-            .cloned()
+        self.name_index
+            .get(&name)
+            .and_then(|&idx| self.profiles.get(idx as usize))
+    }
+
+    /// Finds a profile by its ID and target.
+    pub fn find_by_id_and_target(&self, id: &ProfileId, target: &Target) -> Option<&Profile> {
+        self.id_target_index
+            .get(&(id.clone(), target.clone()))
+            .and_then(|&idx| self.profiles.get(idx as usize))
+    }
+}
+
+impl Deref for ProfileList {
+    type Target = Vec<Profile>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.profiles
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+impl From<Vec<Profile>> for ProfileList {
+    fn from(mut profiles: Vec<Profile>) -> Self {
+        profiles.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+
+        let mut id_target_index = HashMap::with_capacity(profiles.len());
+        let mut name_index = HashMap::with_capacity(profiles.len());
+        let mut search_builder = SearchIndexBuilder::default();
+
+        for (idx, p) in profiles.iter().enumerate() {
+            let idx = idx as u32;
+
+            let mut add_tokens = |text: &str| {
+                text.split(|c: char| !c.is_alphanumeric())
+                    .filter(|s| !s.is_empty())
+                    .for_each(|token| search_builder.insert(&token.to_lowercase(), idx));
+            };
+
+            add_tokens(p.id.as_ref());
+
+            // Index title components by flattening the Options into an iterator
+            for title in &p.titles {
+                if let Some(title) = &title.title {
+                    add_tokens(title);
+                }
+
+                if let Some(vendor) = &title.vendor {
+                    add_tokens(vendor);
+                }
+
+                if let Some(model) = &title.model {
+                    add_tokens(model);
+                }
+
+                if let Some(variant) = &title.variant {
+                    add_tokens(variant);
+                }
+            }
+
+            id_target_index.insert((p.id.clone(), p.target.clone()), idx);
+            p.format_display_names().into_iter().for_each(|name| {
+                name_index.insert(name.to_lowercase(), idx);
+            });
+        }
+
+        let search_index = search_builder.build();
+
+        id_target_index.shrink_to_fit();
+        name_index.shrink_to_fit();
+        profiles.shrink_to_fit();
+
+        Self {
+            profiles,
+            id_target_index,
+            name_index,
+            search_index,
+        }
+    }
+}
+
+impl From<ProfileList> for Vec<Profile> {
+    fn from(list: ProfileList) -> Self {
+        list.profiles
     }
 }
 
@@ -434,7 +546,7 @@ impl From<&Version> for ReleaseSeries {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(from = "String", into = "String")]
 pub struct Target {
     pub target: String,
@@ -733,42 +845,96 @@ mod tests {
     }
 
     #[test]
-    fn test_profile_filtering() {
-        let profiles = [
-            Profile {
-                id: "zyxel,ex5601-t0-ubootmod".into(),
-                titles: vec![ProfileTitle {
-                    model: Some("EX5601-T0".into()),
-                    vendor: Some("Zyxel".into()),
-                    variant: Some("(OpenWrt U-Boot layout)".into()),
-                    title: None,
-                }],
-                target: Target::from("mediatek/filogic"),
-            },
-            Profile {
-                id: "generic".into(),
-                titles: vec![ProfileTitle {
+    fn test_profile_filtering_and_find() {
+        let profiles = vec![
+            Profile::new(
+                "zyxel_ex5601-t0-ubootmod".into(),
+                vec![
+                    ProfileTitle {
+                        model: Some("EX5601-T0".into()),
+                        vendor: Some("Zyxel".into()),
+                        variant: Some("(OpenWrt U-Boot layout)".into()),
+                        title: None,
+                    },
+                    ProfileTitle {
+                        model: Some("EX5601-T1".into()),
+                        vendor: Some("Zyxel".into()),
+                        variant: None,
+                        title: None,
+                    },
+                    ProfileTitle {
+                        model: Some("T-56".into()),
+                        vendor: Some("Zyxel".into()),
+                        variant: None,
+                        title: None,
+                    },
+                ],
+                Target::from("mediatek/filogic"),
+            ),
+            Profile::new(
+                "generic".into(),
+                vec![ProfileTitle {
                     model: Some("x86/64".into()),
                     vendor: Some("Generic".into()),
                     variant: None,
                     title: Some("Generic thing".into()),
                 }],
-                target: Target::from("x86/64"),
-            },
+                Target::from("x86/64"),
+            ),
         ];
 
-        // Match by ID
-        assert_eq!(profiles.filter("ex5601-t0-ubootmod").len(), 1);
-        // Match by title
-        assert_eq!(profiles.filter("generic thing").len(), 1);
-        // Normalized case matching
-        assert_eq!(profiles.filter("EX5601-T0").len(), 1);
+        let profiles = ProfileList::from(profiles);
+
+        // Profiles are sorted by ID: "generic" comes before "zyxel..."
+        let p1 = &profiles[1];
+        assert_eq!(
+            p1.format_display_names(),
+            vec![
+                "Zyxel EX5601-T0 (OpenWrt U-Boot layout) (zyxel_ex5601-t0-ubootmod)".to_string(),
+                "Zyxel EX5601-T1 (zyxel_ex5601-t0-ubootmod)".to_string(),
+                "Zyxel T-56 (zyxel_ex5601-t0-ubootmod)".to_string()
+            ]
+        );
+        assert_eq!(
+            p1.format_all_models(),
+            "Zyxel EX5601-T0 (OpenWrt U-Boot layout) / Zyxel EX5601-T1 / Zyxel T-56"
+        );
+
+        let p2 = &profiles[0];
+        assert_eq!(
+            p2.format_display_names(),
+            vec!["Generic thing (generic)".to_string()]
+        );
+        assert_eq!(p2.format_all_models(), "Generic thing");
+
+        // Test filter with prefixes of tokens
+        assert_eq!(profiles.filter("zyxel_ex5601-t0-ubootmod").len(), 3);
+        assert_eq!(profiles.filter("zyxel").len(), 3);
+        assert_eq!(profiles.filter("zyx").len(), 3);
+        assert_eq!(profiles.filter("generic").len(), 1);
+        assert_eq!(profiles.filter("thin").len(), 1);
+        assert_eq!(profiles.filter("EX5601-T0").len(), 3);
+        assert_eq!(profiles.filter("ubootmod").len(), 3);
         assert_eq!(profiles.filter("nomatch").len(), 0);
 
+        // Test filter with multiple tokens (space-separated)
+        assert_eq!(profiles.filter("zyxel ex5601").len(), 3);
+        assert_eq!(profiles.filter("zyxel t-56").len(), 3);
+        assert_eq!(profiles.filter("zyx t").len(), 3);
+        assert_eq!(profiles.filter("zyx uboot").len(), 3);
+        assert_eq!(profiles.filter("generic thing").len(), 1);
+        assert_eq!(profiles.filter("gen t").len(), 1);
+
+        // Test find_by_display_name (this logic is separate from Trie filter)
         let display_name = "Zyxel EX5601-T0 (OpenWrt U-Boot layout) (zyxel_ex5601-t0-ubootmod)";
         let found = profiles.find_by_display_name(display_name);
         assert!(found.is_some());
         assert_eq!(found.unwrap().id.0, "zyxel_ex5601-t0-ubootmod");
+
+        let display_name_generic = "Generic thing (generic)";
+        let found_generic = profiles.find_by_display_name(display_name_generic);
+        assert!(found_generic.is_some());
+        assert_eq!(found_generic.unwrap().id.0, "generic");
     }
 
     #[test]

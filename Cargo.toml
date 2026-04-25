@@ -12,6 +12,7 @@ rust-version = "1.95"
 anyhow = "1.0"
 bollard = "0.21"
 chrono = { version = "0.4", default-features = false, features = ["alloc", "clock"] }
+fst = "0.4"
 futures-util = "0.3"
 human_bytes = { version = "0.4", default-features = false }
 i-slint-backend-winit = "1.16"
