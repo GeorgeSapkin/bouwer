@@ -287,9 +287,9 @@ fn on_build(
     get_image_builder: &GetImageBuilderFn,
     data: &BuildData,
 ) {
-    let version = Version::from(data.version.as_str());
-    let profile_id = ProfileId::from(data.profile_id.as_str());
-    let target = Target::from(data.target.as_str());
+    let version = data.version.as_str().into();
+    let target: Target = data.target.as_str().into();
+    let profile_id = data.profile_id.as_str().into();
 
     let packages = {
         let mut packages = PackageList::from(data.packages.as_str());
@@ -493,10 +493,6 @@ fn on_download_builder(
     get_image_builder: &GetImageBuilderFn,
     data: &DownloadBuilderData,
 ) {
-    let version = data.version.as_str().into();
-    let target = data.target.as_str().into();
-    let profile_id = data.profile_id.as_str().into();
-
     ui_weak.update_state(|s| {
         s.image_exists = false;
         s.set_notification(Notification::Info, None);
@@ -506,92 +502,92 @@ fn on_download_builder(
         });
     });
 
-    tokio::spawn(clone!(
-        (ui_weak, core, cache, get_image_builder),
-        async move {
-            let image_builder = match get_image_builder(&version, &target) {
-                Ok(ib) => ib,
-                Err(e) => {
-                    let msg = format!("{e}");
-                    ui_weak.update_state(move |s| {
-                        s.set_notification(Notification::Error, Some(&msg));
-                        s.switch_to(UIState::Idle(None));
-                    });
-                    return;
-                }
+    let version = data.version.as_str().into();
+    let target = data.target.as_str().into();
+    let profile_id = data.profile_id.as_str().into();
+
+    let future = clone!((ui_weak, core, cache, get_image_builder), async move {
+        let image_builder = match get_image_builder(&version, &target) {
+            Ok(ib) => ib,
+            Err(e) => {
+                let msg = format!("{e}");
+                ui_weak.update_state(move |s| {
+                    s.set_notification(Notification::Error, Some(&msg));
+                    s.switch_to(UIState::Idle(None));
+                });
+                return;
+            }
+        };
+
+        let mut stream = image_builder.download();
+        let mut current_progress = 0.0f32;
+        let mut layers = HashMap::<String, (i64, i64)>::new();
+
+        while let Some(pull_result) = stream.next().await {
+            let Ok(info) = pull_result else {
+                let msg = format!("Pull error: {}", pull_result.unwrap_err());
+                eprintln!("{msg}");
+                ui_weak.set_notification(Notification::Error, Some(&msg));
+                break;
             };
 
-            let mut stream = image_builder.download();
-            let mut current_progress = 0.0f32;
-            let mut layers = HashMap::<String, (i64, i64)>::new();
-
-            while let Some(pull_result) = stream.next().await {
-                let Ok(info) = pull_result else {
-                    let msg = format!("Pull error: {}", pull_result.unwrap_err());
-                    eprintln!("{msg}");
-                    ui_weak.set_notification(Notification::Error, Some(&msg));
-                    break;
-                };
-
-                if let (Some(id), Some(pd)) = (info.id, info.progress_detail.as_ref())
-                    && let (Some(current), Some(total)) = (pd.current, pd.total)
-                    && total > 0
-                {
-                    layers.insert(id, (current, total));
-                }
-
-                let total_current: i64 = layers.values().map(|&(c, _)| c).sum();
-                let total_sum: i64 = layers.values().map(|&(_, t)| t).sum();
-
-                let status_text = if total_sum > 0 {
-                    current_progress =
-                        current_progress.max(total_current as f32 / total_sum as f32);
-                    let current_mib = total_current as f64 / SIZE_MB;
-                    let total_mib = total_sum as f64 / SIZE_MB;
-                    format!("Downloading image builder: {current_mib:.2} / {total_mib:.2} MB")
-                } else {
-                    current_progress = (current_progress + 0.001).min(0.99);
-                    "Downloading image builder".to_string()
-                };
-
-                if !status_text.is_empty() {
-                    use std::io::{self, Write};
-                    print!("\r\x1b[K{status_text}");
-                    let _ = io::stdout().flush();
-                }
-
-                ui_weak.switch_state_to(UIState::DownloadingBuilder {
-                    progress: Some(current_progress),
-                    status: Some(status_text),
-                });
+            if let (Some(id), Some(pd)) = (info.id, info.progress_detail.as_ref())
+                && let (Some(current), Some(total)) = (pd.current, pd.total)
+                && total > 0
+            {
+                layers.insert(id, (current, total));
             }
 
-            println!();
-            drop(stream);
+            let total_current: i64 = layers.values().map(|&(c, _)| c).sum();
+            let total_sum: i64 = layers.values().map(|&(_, t)| t).sum();
 
-            let exists =
-                set_image_exists(&ui_weak, &get_image_builder, &version, &target, true).await;
-            if exists {
-                fetch_and_update_packages(
-                    &ui_weak,
-                    core,
-                    cache,
-                    &get_image_builder,
-                    &version,
-                    &target,
-                    &profile_id,
-                )
-                .await;
-
-                let _ = ui_weak.upgrade_in_event_loop(|ui| {
-                    ui.global::<StateBridge>()
-                        .invoke_refresh_builders_requested();
-                });
+            let status_text = if total_sum > 0 {
+                current_progress = current_progress.max(total_current as f32 / total_sum as f32);
+                let current_mib = total_current as f64 / SIZE_MB;
+                let total_mib = total_sum as f64 / SIZE_MB;
+                format!("Downloading image builder: {current_mib:.2} / {total_mib:.2} MB")
             } else {
-                ui_weak.switch_state_to(UIState::Idle(None));
+                current_progress = (current_progress + 0.001).min(0.99);
+                "Downloading image builder".to_string()
+            };
+
+            if !status_text.is_empty() {
+                use std::io::{self, Write};
+                print!("\r\x1b[K{status_text}");
+                let _ = io::stdout().flush();
             }
+
+            ui_weak.switch_state_to(UIState::DownloadingBuilder {
+                progress: Some(current_progress),
+                status: Some(status_text),
+            });
         }
-    ));
+
+        println!();
+        drop(stream);
+
+        let exists = set_image_exists(&ui_weak, &get_image_builder, &version, &target, true).await;
+        if exists {
+            fetch_and_update_packages(
+                &ui_weak,
+                core,
+                cache,
+                &get_image_builder,
+                &version,
+                &target,
+                &profile_id,
+            )
+            .await;
+
+            let _ = ui_weak.upgrade_in_event_loop(|ui| {
+                ui.global::<StateBridge>()
+                    .invoke_refresh_builders_requested();
+            });
+        } else {
+            ui_weak.switch_state_to(UIState::Idle(None));
+        }
+    });
+    tokio::spawn(future);
 }
 
 fn on_fetch_from_device(
@@ -601,13 +597,6 @@ fn on_fetch_from_device(
     data: &FetchFromDeviceData,
 ) {
     let host = data.host.to_string();
-    let user = data.user.to_string();
-    let identity = data.identity.to_string();
-    let password = data.password.to_string();
-
-    let version: Version = data.version.as_str().into();
-    let profile_id: ProfileId = data.profile_id.as_str().into();
-    let target: Target = data.target.as_str().into();
 
     println!("Fetching package list from {host}");
     ui_weak.switch_state_to(UIState::FetchingFromDevice {
@@ -615,104 +604,95 @@ fn on_fetch_from_device(
         status: Some(format!("Connecting to {host}")),
     });
 
-    tokio::spawn(clone!(
-        (
-            ui_weak,
-            cache,
-            get_image_builder,
-            version,
-            target,
-            profile_id
-        ),
-        async move {
-            let (device_version, device_target, device_profile_id, device_packages) = {
-                let result = tokio::task::spawn_blocking(clone!(
-                    (host, user, password, identity),
-                    move || {
-                        let identity = (!identity.is_empty()).then_some(identity.as_str());
-                        let password = (!password.is_empty()).then_some(password.as_str());
-                        let device = Device::new(SshOptions {
-                            host: &host,
-                            user: &user,
-                            identity,
-                            password,
-                        });
-                        device.fetch_packages()
-                    }
-                ))
-                .await;
+    let user = data.user.to_string();
+    let identity = data.identity.to_string();
+    let password = data.password.to_string();
 
-                match result {
-                    Ok(Ok(res)) => res,
-                    Ok(Err(e)) => {
-                        let msg = format!("SSH Error: {e}");
-                        ui_weak.update_state(move |s| {
-                            s.set_notification(Notification::Error, Some(&msg));
-                            s.switch_to(UIState::Idle(None));
-                        });
-                        return;
-                    }
-                    Err(e) => {
-                        let msg = format!("Task Error: {e}");
-                        ui_weak.update_state(move |s| {
-                            s.set_notification(Notification::Error, Some(&msg));
-                            s.switch_to(UIState::Idle(None));
-                        });
-                        return;
-                    }
-                }
-            };
+    let version = data.version.as_str().into();
+    let target = data.target.as_str().into();
+    let profile_id: ProfileId = data.profile_id.as_str().into();
 
-            if target != device_target
-                || (profile_id != device_profile_id && profile_id.as_ref() != "generic")
-            {
-                ui_weak.update_state(move |s| {
-                    let msg = format!("Wrong profile: expected {target} {profile_id}, got {device_target} {device_profile_id}");
-                    s.set_notification(Notification::Error, Some(&msg));
-                    s.switch_to(UIState::Idle(Some("Failed to fetch package list".into())));
+    let future = clone!((ui_weak, cache, get_image_builder), async move {
+        let (device_version, device_target, device_profile_id, device_packages) = {
+            let result = tokio::task::spawn_blocking(move || {
+                let identity = (!identity.is_empty()).then_some(identity.as_str());
+                let password = (!password.is_empty()).then_some(password.as_str());
+                let device = Device::new(SshOptions {
+                    host: &host,
+                    user: &user,
+                    identity,
+                    password,
                 });
-                return;
+                device.fetch_packages()
+            })
+            .await;
+
+            match result {
+                Ok(Ok(res)) => res,
+                Ok(Err(e)) => {
+                    let msg = format!("SSH Error: {e}");
+                    ui_weak.update_state(move |s| {
+                        s.set_notification(Notification::Error, Some(&msg));
+                        s.switch_to(UIState::Idle(None));
+                    });
+                    return;
+                }
+                Err(e) => {
+                    let msg = format!("Task Error: {e}");
+                    ui_weak.update_state(move |s| {
+                        s.set_notification(Notification::Error, Some(&msg));
+                        s.switch_to(UIState::Idle(None));
+                    });
+                    return;
+                }
+            }
+        };
+
+        if target != device_target
+            || (profile_id != device_profile_id && profile_id.as_ref() != "generic")
+        {
+            ui_weak.update_state(move |s| {
+                let msg = format!("Wrong profile: expected {target} {profile_id}, got {device_target} {device_profile_id}");
+                s.set_notification(Notification::Error, Some(&msg));
+                s.switch_to(UIState::Idle(Some("Failed to fetch package list".into())));
+            });
+            return;
+        }
+
+        // Load original packages for comparison
+        let mut original_packages =
+            fetch_packages_for_profile(&cache, &get_image_builder, &version, &target, &profile_id)
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("Error fetching package list: {e}");
+                    PackageList::default()
+                });
+
+        original_packages.extend(&PackageList::from(EXTRA_PACKAGES), true);
+        let removed_packages = original_packages.diff(&device_packages).to_string();
+
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            let mut s = ui.get_state();
+            s.packages_text = device_packages.to_string().into();
+            s.removed_packages_text = removed_packages.into();
+
+            s.switch_to(UIState::Idle(None));
+
+            if !device_version.same_release_series(&version.to_release_series()) {
+                let device_series = device_version.to_release_series();
+                let msg = format!(
+                    "Package list from {device_series} might be incompatible with {}.",
+                    version.to_release_series()
+                );
+                s.set_notification(Notification::Warning, Some(&msg));
             }
 
-            // Load original packages for comparison
-            let mut original_packages = fetch_packages_for_profile(
-                &cache,
-                &get_image_builder,
-                &version,
-                &target,
-                &profile_id,
-            )
-            .await
-            .unwrap_or_else(|e| {
-                eprintln!("Error fetching package list: {e}");
-                PackageList::default()
-            });
+            ui.set_state(s);
 
-            original_packages.extend(&PackageList::from(EXTRA_PACKAGES), true);
-            let removed_packages = original_packages.diff(&device_packages).to_string();
-
-            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                let mut s = ui.get_state();
-                s.packages_text = device_packages.to_string().into();
-                s.removed_packages_text = removed_packages.into();
-
-                s.switch_to(UIState::Idle(None));
-
-                if !device_version.same_release_series(&version.to_release_series()) {
-                    let device_series = device_version.to_release_series();
-                    let msg = format!(
-                        "Package list from {device_series} might be incompatible with {}.",
-                        version.to_release_series()
-                    );
-                    s.set_notification(Notification::Warning, Some(&msg));
-                }
-
-                ui.set_state(s);
-
-                ui.invoke_recalculate_preview();
-            });
-        }
-    ));
+            ui.invoke_recalculate_preview();
+        });
+    });
+    tokio::spawn(future);
 }
 
 fn on_fetch_ssh_agent_identities(ui_weak: &slint::Weak<AppWindow>) {
@@ -751,35 +731,32 @@ fn on_load_preset(
     ui_weak.switch_state_to(UIState::Idle(None));
     let version = version.as_str().into();
 
-    tokio::spawn(clone!(
-        (ui_weak, core, cache, get_image_builder),
-        async move {
-            let picker = rfd::AsyncFileDialog::new()
-                .add_filter("JSON files", &["json"])
-                .set_title("Load Preset")
-                .pick_file();
+    let future = clone!((ui_weak, core, cache, get_image_builder), async move {
+        let picker = rfd::AsyncFileDialog::new()
+            .add_filter("JSON files", &["json"])
+            .set_title("Load Preset")
+            .pick_file();
 
-            let Some(path) = picker.await else {
-                ui_weak.switch_state_to(UIState::Idle(None));
-                return;
-            };
+        let Some(path) = picker.await else {
+            ui_weak.switch_state_to(UIState::Idle(None));
+            return;
+        };
 
-            ui_weak.switch_state_to(UIState::LoadingPreset);
+        ui_weak.switch_state_to(UIState::LoadingPreset);
 
-            let path = PathBuf::from(path);
-            if let Err(e) =
-                load_preset_from_path(&ui_weak, &core, &path, cache, &get_image_builder, &version)
-                    .await
-            {
-                eprintln!("Error loading preset: {e}");
-                let msg = format!("{e}");
-                ui_weak.update_state(move |s| {
-                    s.set_notification(Notification::Error, Some(&msg));
-                    s.switch_to(UIState::Idle(None));
-                });
-            }
+        let path = PathBuf::from(path);
+        if let Err(e) =
+            load_preset_from_path(&ui_weak, &core, &path, cache, &get_image_builder, &version).await
+        {
+            eprintln!("Error loading preset: {e}");
+            let msg = format!("{e}");
+            ui_weak.update_state(move |s| {
+                s.set_notification(Notification::Error, Some(&msg));
+                s.switch_to(UIState::Idle(None));
+            });
         }
-    ));
+    });
+    tokio::spawn(future);
 }
 
 fn on_save_preset(ui_weak: &slint::Weak<AppWindow>, data: BuildData) {
@@ -833,7 +810,7 @@ fn on_open_build_folder(
         .build_path
         .join(Target::from(target.as_str()).to_path());
 
-    tokio::spawn(clone!((ui_weak, build_folder_path), async move {
+    tokio::spawn(clone!((ui_weak), async move {
         open_dir(&ui_weak, &build_folder_path).await;
     }));
 }
@@ -853,7 +830,7 @@ fn on_packages_edited(
         h.abort();
     }
 
-    *handle_lock = Some(tokio::spawn(clone!((ui_weak, core, text), async move {
+    let future = clone!((ui_weak, core, text), async move {
         // Wait for 500ms of inactivity
         tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -867,7 +844,8 @@ fn on_packages_edited(
             ui.update_state(|s| s.removed_packages_text = removed_packages.into());
             ui.invoke_recalculate_preview();
         });
-    })));
+    });
+    *handle_lock = Some(tokio::spawn(future));
 }
 
 fn on_profile_search_key_pressed(
@@ -951,9 +929,10 @@ fn on_profile_selected(
         return;
     };
 
-    ui_weak.update_state(clone!((data, profile), move |s| {
+    let name = data.name.clone();
+    ui_weak.update_state(clone!((profile), move |s| {
         s.profiles = Rc::new(VecModel::<SharedString>::default()).into();
-        s.search_text = data.name;
+        s.search_text = name;
         s.selected_id = profile.id.as_ref().into();
         s.selected_target = profile.target.to_string().into();
         s.selected_model = profile.format_all_models().into();
@@ -961,46 +940,35 @@ fn on_profile_selected(
         s.switch_to(UIState::FetchingPackages);
     }));
 
-    let profile_id = profile.id.clone();
+    let version = data.version.as_str().into();
     let target = profile.target.clone();
-    let version = Version::from(data.version.as_str());
+    let profile_id = profile.id.clone();
 
-    tokio::spawn(clone!(
-        (
-            ui_weak,
-            core,
-            cache,
-            get_image_builder,
-            version,
-            target,
-            profile_id
-        ),
-        async move {
-            let exists =
-                set_image_exists(&ui_weak, &get_image_builder, &version, &target, false).await;
-            if exists {
-                fetch_and_update_packages(
-                    &ui_weak,
-                    core,
-                    cache,
-                    &get_image_builder,
-                    &version,
-                    &target,
-                    &profile_id,
-                )
-                .await;
-            } else {
-                let _ = ui_weak.upgrade_in_event_loop(|ui| {
-                    ui.switch_state_to(UIState::Idle(None));
+    let future = clone!((ui_weak, core, cache, get_image_builder), async move {
+        let exists = set_image_exists(&ui_weak, &get_image_builder, &version, &target, false).await;
+        if exists {
+            fetch_and_update_packages(
+                &ui_weak,
+                core,
+                cache,
+                &get_image_builder,
+                &version,
+                &target,
+                &profile_id,
+            )
+            .await;
+        } else {
+            let _ = ui_weak.upgrade_in_event_loop(|ui| {
+                ui.switch_state_to(UIState::Idle(None));
 
-                    let ui_weak = ui.as_weak();
-                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                        ui.invoke_request_profile_search_focus();
-                    });
+                let ui_weak = ui.as_weak();
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.invoke_request_profile_search_focus();
                 });
-            }
+            });
         }
-    ));
+    });
+    tokio::spawn(future);
 }
 
 fn on_show_rcs_toggled(ui_weak: &slint::Weak<AppWindow>, core: &SharedCore, data: ShowRcsData) {
@@ -1032,9 +1000,9 @@ fn on_version_changed(
     client: &OpenWrtClient,
     version: &SharedString,
 ) {
-    let version = Version::from(version.as_str());
+    let version: Version = version.as_str().into();
     ui_weak.switch_state_to(UIState::LoadingProfiles(version.clone()));
-    tokio::spawn(clone!((ui_weak, client, core, version), async move {
+    tokio::spawn(clone!((ui_weak, client, core), async move {
         if let Ok(profiles) = client.fetch_profiles(&version).await {
             if let Ok(mut c) = core.write() {
                 c.profiles = profiles;
@@ -1321,7 +1289,7 @@ async fn load_preset_from_path(
         })?;
 
     let profile_id = preset.profile_id.clone();
-    ui_weak.update_state(clone!((profile_id, name, model, target), move |s| {
+    ui_weak.update_state(clone!((profile_id, target), move |s| {
         s.disabled_services_text = preset.disabled_services.unwrap_or_default().into();
         s.extra_image_name_text = preset.extra_image_name.unwrap_or_default().into();
         s.overlay_path_text = preset
