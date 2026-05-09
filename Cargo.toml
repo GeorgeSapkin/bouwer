@@ -10,7 +10,7 @@ rust-version = "1.95"
 
 [dependencies]
 anyhow = "1.0"
-bollard = "0.20"
+bollard = "0.21"
 chrono = { version = "0.4", default-features = false, features = ["alloc", "clock"] }
 futures-util = "0.3"
 human_bytes = { version = "0.4", default-features = false }
