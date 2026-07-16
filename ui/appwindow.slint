@@ -169,6 +169,7 @@ export component AppWindow inherits Window {
     icon: @image-url("../assets/logo_no_shadow.svg");
     min-width: 700px;
     min-height: 700px;
+    preferred-height: 700px;
 
     DeviceDialog {
         show <=> root.state.show_device_dialog;
@@ -210,7 +211,6 @@ export component AppWindow inherits Window {
             z: 2;
             version_text := Text {
                 text: "Version:";
-                font-size: 14px;
                 horizontal-alignment: right;
                 vertical-alignment: center;
                 width: 55px;
@@ -255,7 +255,6 @@ export component AppWindow inherits Window {
             z: 1;
             Text {
                 text: "Profile:";
-                font-size: 14px;
                 horizontal-alignment: right;
                 vertical-alignment: center;
                 width: version_text.width;
@@ -348,14 +347,12 @@ export component AppWindow inherits Window {
                     Text {
                         text: "Model:";
                         width: 45px;
-                        font-size: 12px;
                         font-weight: 700;
                         horizontal-alignment: right;
                     }
 
                     Text {
                         text: root.state.selected_model;
-                        font-size: 12px;
                         wrap: word-wrap;
                     }
                 }
@@ -363,28 +360,24 @@ export component AppWindow inherits Window {
                 Row {
                     Text {
                         text: "ID:";
-                        font-size: 12px;
                         font-weight: 700;
                         horizontal-alignment: right;
                     }
 
                     Text {
                         text: root.state.selected_id;
-                        font-size: 12px;
                     }
                 }
 
                 Row {
                     Text {
                         text: "Target:";
-                        font-size: 12px;
                         font-weight: 700;
                         horizontal-alignment: right;
                     }
 
                     Text {
                         text: root.state.selected_target;
-                        font-size: 12px;
                     }
                 }
             }
@@ -405,7 +398,6 @@ export component AppWindow inherits Window {
                         extra_image_rect := Rectangle {
                             extra_image_label := Text {
                                 text: "Extra image name:";
-                                font-size: 14px;
                                 vertical-alignment: center;
                             }
 
@@ -439,7 +431,6 @@ export component AppWindow inherits Window {
                         packages_rect := Rectangle {
                             Text {
                                 text: "Packages:";
-                                font-size: 14px;
                                 vertical-alignment: center;
                             }
 
@@ -485,7 +476,6 @@ export component AppWindow inherits Window {
 
                             Text {
                                 text: "Removed default packages:";
-                                font-size: 14px;
                                 horizontal-alignment: left;
                             }
                         }
@@ -526,7 +516,6 @@ export component AppWindow inherits Window {
                         rootfs_size_rect := Rectangle {
                             Text {
                                 text: "RootFS size:";
-                                font-size: 14px;
                                 vertical-alignment: center;
                             }
 
@@ -560,7 +549,6 @@ export component AppWindow inherits Window {
                             padding: 0px;
                             Text {
                                 text: "Disabled services:";
-                                font-size: 14px;
                                 horizontal-alignment: left;
                             }
                         }
@@ -596,7 +584,6 @@ export component AppWindow inherits Window {
                             width: 100px;
                             overlay_path_label := Text {
                                 text: "Overlay folder:";
-                                font-size: 14px;
                                 horizontal-alignment: right;
                                 vertical-alignment: center;
                                 width: parent.width;
@@ -639,7 +626,6 @@ export component AppWindow inherits Window {
                             width: overlay_path_rect.width;
                             build_path_label := Text {
                                 text: "Build folder:";
-                                font-size: 14px;
                                 horizontal-alignment: right;
                                 vertical-alignment: center;
                                 width: parent.width;
@@ -691,7 +677,6 @@ export component AppWindow inherits Window {
                             padding: 0px;
                             Text {
                                 text: "Build command:";
-                                font-size: 14px;
                                 horizontal-alignment: left;
                             }
                         }
@@ -728,7 +713,6 @@ export component AppWindow inherits Window {
                         padding: 0px;
                         Text {
                             text: "Downloaded image builders:";
-                            font-size: 14px;
                             vertical-alignment: center;
                         }
 
@@ -812,7 +796,6 @@ export component AppWindow inherits Window {
 
                 status_text := Text {
                     text: "Ready";
-                    font-size: 12px;
                     horizontal-alignment: left;
                     vertical-alignment: center;
 
