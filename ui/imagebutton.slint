@@ -3,15 +3,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 import { Palette } from "std-widgets.slint";
-import { Tooltip } from "tooltip.slint";
 
 export component ImageButton inherits Rectangle {
     in property <bool> enabled: true;
     in property <length> image_height: 18px;
     in property <length> image_width: 18px;
     in property <image> source;
-    in property <string> tooltip_text: "";
-    in property <LayoutAlignment> tooltip_alignment: LayoutAlignment.start;
 
     callback clicked();
 
@@ -40,12 +37,5 @@ export component ImageButton inherits Rectangle {
         clicked => {
             root.clicked();
         }
-    }
-
-    Tooltip {
-        text: root.tooltip_text;
-        active: touch_area.has-hover && root.tooltip_text != "";
-        x: root.tooltip_alignment == LayoutAlignment.start ? image.x : image.x + image.width - self.width;
-        y: parent.height + 8px;
     }
 }

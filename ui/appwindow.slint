@@ -24,7 +24,6 @@ import { EditableComboBox } from "combobox.slint";
 import { ImageButton } from "imagebutton.slint";
 import { DeviceDialog } from "device.slint";
 import { Notification } from "notification.slint";
-import { Tooltip } from "tooltip.slint";
 
 global Constants {
     in-out property <length> autocomplete_element_height: 40px;
@@ -175,9 +174,11 @@ export component AppWindow inherits Window {
         show <=> root.state.show_device_dialog;
         identities: root.state.ssh_agent_identities;
         z: 1100;
+
         identities_requested() => {
             StateBridge.fetch_ssh_agent_identities_requested();
         }
+
         fetch_requested(host, user, password, identity) => {
             StateBridge.fetch_from_device_requested({
                 version: root.state.selected_version,
@@ -220,6 +221,7 @@ export component AppWindow inherits Window {
                 model: root.state.versions;
                 enabled: !root.state.busy;
                 horizontal-stretch: 1;
+
                 selected(val) => {
                     StateBridge.version_changed(val);
                 }
@@ -229,6 +231,7 @@ export component AppWindow inherits Window {
                 text: "Show pre-release versions";
                 enabled: !root.state.busy;
                 checked <=> StateBridge.state.show_rcs;
+
                 toggled => {
                     StateBridge.show_rcs_toggled({
                         show_rcs: self.checked,
@@ -241,11 +244,13 @@ export component AppWindow inherits Window {
                 source: @image-url("../assets/logo_no_frame.svg");
                 image_height: 22px;
                 image_width: 22px;
-                tooltip_text: "About Bouwer";
-                tooltip_alignment: LayoutAlignment.end;
 
                 clicked => {
                     StateBridge.state.show_about = true;
+                }
+
+                Tooltip {
+                    text: @markdown("About Bouwer");
                 }
             }
         }
@@ -253,6 +258,7 @@ export component AppWindow inherits Window {
         HorizontalBox {
             padding: 0px;
             z: 1;
+
             Text {
                 text: "Profile:";
                 horizontal-alignment: right;
@@ -273,6 +279,7 @@ export component AppWindow inherits Window {
                 edited(text) => {
                     StateBridge.profile_search_edited(text);
                 }
+
                 key_pressed(event) => {
                     return StateBridge.profile_search_key_pressed({
                         text: event.text,
@@ -281,6 +288,7 @@ export component AppWindow inherits Window {
                         version: root.state.selected_version,
                     });
                 }
+
                 selected(item) => {
                     StateBridge.profile_selected({
                         version: root.state.selected_version,
@@ -292,6 +300,7 @@ export component AppWindow inherits Window {
 
         HorizontalBox {
             padding: 0px;
+
             Rectangle {
                 horizontal-stretch: 1;
             }
@@ -300,6 +309,7 @@ export component AppWindow inherits Window {
                 text: "Download image builder";
                 enabled: !root.state.busy && root.state.selected_id != "" && !root.state.image_exists;
                 primary: root.state.selected_id != "" && !root.state.image_exists;
+
                 clicked => {
                     StateBridge.download_builder_requested({
                         version: root.state.selected_version,
@@ -312,6 +322,7 @@ export component AppWindow inherits Window {
             load_preset_button := Button {
                 text: "Load preset";
                 enabled: !root.state.busy && !root.state.profiles_fetch_failed;
+
                 clicked => {
                     StateBridge.load_preset_requested(root.state.selected_version);
                 }
@@ -320,6 +331,7 @@ export component AppWindow inherits Window {
             save_preset_button := Button {
                 text: "Save preset";
                 enabled: !root.state.busy && root.state.image_exists && !root.state.profiles_fetch_failed;
+
                 clicked => {
                     StateBridge.save_preset_requested({
                         version: root.state.selected_version,
@@ -340,9 +352,11 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Palette.border;
             border-radius: 4px;
+
             GridLayout {
                 padding: 10px;
                 spacing: 6px;
+
                 Row {
                     Text {
                         text: "Model:";
@@ -395,22 +409,14 @@ export component AppWindow inherits Window {
                         padding: 0px;
                         z: 100;
 
-                        extra_image_rect := Rectangle {
-                            extra_image_label := Text {
-                                text: "Extra image name:";
-                                vertical-alignment: center;
-                            }
+                        extra_image_label := Text {
+                            text: "Extra image name:";
+                            vertical-alignment: center;
 
-                            extra_image_touch := TouchArea {
-                                width: extra_image_rect.width;
-                                height: extra_image_rect.height;
-
-                                extra_image_tooltip := Tooltip {
-                                    text: "Extra name appended to the generated firmware image filenames";
-                                    active: extra_image_touch.has-hover;
-                                    x: 0;
-                                    y: parent.height + 8px;
-                                }
+                            Tooltip {
+                                text: @markdown(
+                                    "Extra name appended to the generated firmware image filenames"
+                                );
                             }
                         }
 
@@ -428,31 +434,28 @@ export component AppWindow inherits Window {
                         padding: 0px;
                         z: 90;
                         alignment: space-between;
-                        packages_rect := Rectangle {
-                            Text {
-                                text: "Packages:";
-                                vertical-alignment: center;
-                            }
 
-                            packages_touch := TouchArea {
-                                width: parent.width;
-                                height: parent.height;
-                                packages_tooltip := Tooltip {
-                                    text: "Space-separated list of packages to include in the firmware";
-                                    active: packages_touch.has-hover;
-                                    x: 0;
-                                    y: parent.height + 8px;
-                                }
+                        Text {
+                            text: "Packages:";
+                            vertical-alignment: center;
+
+                            Tooltip {
+                                text: @markdown(
+                                    "Space-separated list of packages to include in the firmware"
+                                );
                             }
                         }
 
                         ImageButton {
                             source: @image-url("../assets/router_from.svg");
                             enabled: !root.state.busy && root.state.image_exists;
-                            tooltip_text: "Fetch package list from a device via SSH";
-                            tooltip_alignment: LayoutAlignment.end;
+
                             clicked => {
                                 root.state.show_device_dialog = true;
+                            }
+
+                            Tooltip {
+                                text: @markdown("Fetch package list from a device via SSH");
                             }
                         }
                     }
@@ -462,34 +465,21 @@ export component AppWindow inherits Window {
                         enabled: !root.state.busy && root.state.image_exists;
                         min-height: 60px;
                         placeholder-text: "none";
+
                         edited(text) => {
                             StateBridge.packages_edited(text);
                             root.recalculate_preview();
                         }
                     }
 
-                    removed_packages_rect := Rectangle {
-                        z: 80;
+                    Text {
+                        text: "Removed default packages:";
+                        horizontal-alignment: left;
 
-                        VerticalBox {
-                            padding: 0px;
-
-                            Text {
-                                text: "Removed default packages:";
-                                horizontal-alignment: left;
-                            }
-                        }
-
-                        remove_packages_touch := TouchArea {
-                            width: removed_packages_rect.width;
-                            height: removed_packages_rect.height;
-
-                            remove_packages_tooltip := Tooltip {
-                                text: "Default packages that are excluded from the firmware";
-                                active: remove_packages_touch.has-hover;
-                                x: 0;
-                                y: parent.height + 8px;
-                            }
+                        Tooltip {
+                            text: @markdown(
+                                "Default packages that are excluded from the firmware"
+                            );
                         }
                     }
 
@@ -513,22 +503,13 @@ export component AppWindow inherits Window {
                     HorizontalBox {
                         padding: 0px;
                         z: 100;
-                        rootfs_size_rect := Rectangle {
-                            Text {
-                                text: "RootFS size:";
-                                vertical-alignment: center;
-                            }
 
-                            rootfs_size_touch := TouchArea {
-                                width: rootfs_size_rect.width;
-                                height: rootfs_size_rect.height;
+                        Text {
+                            text: "RootFS size:";
+                            vertical-alignment: center;
 
-                                rootfs_size_tooltip := Tooltip {
-                                    text: "Size of the root filesystem in MiB";
-                                    active: rootfs_size_touch.has-hover;
-                                    x: 0;
-                                    y: parent.height + 8px;
-                                }
+                            Tooltip {
+                                text: @markdown("Size of the root filesystem in MiB");
                             }
                         }
 
@@ -543,26 +524,14 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    disabled_services_rect := Rectangle {
-                        z: 90;
-                        HorizontalBox {
-                            padding: 0px;
-                            Text {
-                                text: "Disabled services:";
-                                horizontal-alignment: left;
-                            }
-                        }
+                    Text {
+                        text: "Disabled services:";
+                        horizontal-alignment: left;
 
-                        disabled_services_touch := TouchArea {
-                            width: disabled_services_rect.width;
-                            height: disabled_services_rect.height;
-
-                            disabled_services_tooltip := Tooltip {
-                                text: "Space-separated list of services to disable in the firmware";
-                                active: disabled_services_touch.has-hover;
-                                x: 0;
-                                y: parent.height + 8px;
-                            }
+                        Tooltip {
+                            text: @markdown(
+                                "Space-separated list of services to disable in the firmware"
+                            );
                         }
                     }
 
@@ -571,6 +540,7 @@ export component AppWindow inherits Window {
                         enabled: !root.state.busy && root.state.image_exists;
                         min-height: 60px;
                         placeholder-text: "none";
+
                         edited => {
                             root.recalculate_preview();
                         }
@@ -582,22 +552,17 @@ export component AppWindow inherits Window {
 
                         overlay_path_rect := Rectangle {
                             width: 100px;
+
                             overlay_path_label := Text {
                                 text: "Overlay folder:";
                                 horizontal-alignment: right;
                                 vertical-alignment: center;
                                 width: parent.width;
-                            }
 
-                            overlay_path_touch := TouchArea {
-                                width: overlay_path_rect.width;
-                                height: overlay_path_rect.height;
-
-                                overlay_path_tooltip := Tooltip {
-                                    text: "Path to the overlay folder which content will be added on top of the root filesystem";
-                                    active: overlay_path_touch.has-hover;
-                                    x: 0;
-                                    y: parent.height + 8px;
+                                Tooltip {
+                                    text: @markdown(
+                                        "Path to the overlay folder which content will be added on top of the root filesystem"
+                                    );
                                 }
                             }
                         }
@@ -612,6 +577,7 @@ export component AppWindow inherits Window {
                         Button {
                             text: "Select folder";
                             enabled: !root.state.busy && root.state.image_exists;
+
                             clicked => {
                                 StateBridge.select_overlay_folder_requested();
                             }
@@ -623,23 +589,18 @@ export component AppWindow inherits Window {
                         z: 70;
 
                         build_path_rect := Rectangle {
-                            width: overlay_path_rect.width;
+                            width: 100px;
+
                             build_path_label := Text {
                                 text: "Build folder:";
                                 horizontal-alignment: right;
                                 vertical-alignment: center;
                                 width: parent.width;
-                            }
 
-                            build_path_touch := TouchArea {
-                                width: build_path_rect.width;
-                                height: build_path_rect.height;
-
-                                build_path_tooltip := Tooltip {
-                                    text: "Path to the build folder where the firmware images will be built";
-                                    active: build_path_touch.has-hover;
-                                    x: 0;
-                                    y: parent.height + 8px;
+                                Tooltip {
+                                    text: @markdown(
+                                        "Path to the build folder where the firmware images will be built"
+                                    );
                                 }
                             }
                         }
@@ -649,6 +610,7 @@ export component AppWindow inherits Window {
                             enabled: !root.state.busy;
                             placeholder_text: "none";
                             read-only: false;
+
                             edited(text) => {
                                 StateBridge.build_path_edited(text);
                             }
@@ -657,6 +619,7 @@ export component AppWindow inherits Window {
                         Button {
                             text: "Select folder";
                             enabled: !root.state.busy;
+
                             clicked => {
                                 StateBridge.select_build_folder_requested();
                             }
@@ -671,26 +634,14 @@ export component AppWindow inherits Window {
                     padding: 0px;
                     padding-top: 10px;
 
-                    build_command_rect := Rectangle {
-                        z: 90;
-                        HorizontalBox {
-                            padding: 0px;
-                            Text {
-                                text: "Build command:";
-                                horizontal-alignment: left;
-                            }
-                        }
+                    Text {
+                        text: "Build command:";
+                        horizontal-alignment: left;
 
-                        build_command_touch := TouchArea {
-                            width: build_command_rect.width;
-                            height: build_command_rect.height;
-
-                            build_command_tooltip := Tooltip {
-                                text: "Build command that will be passed to the image builder";
-                                active: build_command_touch.has-hover;
-                                x: 0;
-                                y: parent.height + 8px;
-                            }
+                        Tooltip {
+                            text: @markdown(
+                                "Build command that will be passed to the image builder"
+                            );
                         }
                     }
 
@@ -711,6 +662,7 @@ export component AppWindow inherits Window {
 
                     HorizontalBox {
                         padding: 0px;
+
                         Text {
                             text: "Downloaded image builders:";
                             vertical-alignment: center;
@@ -723,10 +675,13 @@ export component AppWindow inherits Window {
                         ImageButton {
                             source: @image-url("../assets/refresh.svg");
                             enabled: !root.state.busy && root.state.image_exists;
-                            tooltip_text: "Refresh list of downloaded image builders";
-                            tooltip_alignment: LayoutAlignment.end;
+
                             clicked => {
                                 StateBridge.refresh_builders_requested();
+                            }
+
+                            Tooltip {
+                                text: @markdown("Refresh list of downloaded image builders");
                             }
                         }
                     }
@@ -734,6 +689,7 @@ export component AppWindow inherits Window {
                     ImageBuilderList {
                         builders: root.state.downloaded_builders;
                         busy: root.state.busy;
+
                         delete_builder(tag) => {
                             StateBridge.delete_builder_requested({
                                 tag: tag,
@@ -758,6 +714,7 @@ export component AppWindow inherits Window {
             Button {
                 text: "Open build folder";
                 enabled: !root.state.busy && root.state.image_exists;
+
                 clicked => {
                     StateBridge.open_build_folder_requested(root.state.selected_target);
                 }
@@ -767,6 +724,7 @@ export component AppWindow inherits Window {
                 text: "Build firmware";
                 primary: true;
                 enabled: !root.state.busy && root.state.image_exists && root.state.packages_text != "";
+
                 clicked => {
                     StateBridge.build_requested({
                         version: root.state.selected_version,
@@ -803,12 +761,15 @@ export component AppWindow inherits Window {
                         fetch_failed when StateBridge.state.profiles_fetch_failed: {
                             text: "Failed to fetch profiles";
                         }
+
                         no_profile when StateBridge.state.selected_id == "": {
                             text: "Select profile";
                         }
+
                         missing_builder when !StateBridge.state.image_exists && StateBridge.state.status_text == "": {
                             text: "Missing image builder";
                         }
+
                         custom when StateBridge.state.status_text != "": {
                             text: StateBridge.state.status_text;
                         }
@@ -817,6 +778,7 @@ export component AppWindow inherits Window {
 
                 VerticalBox {
                     width: 50%;
+
                     ProgressIndicator {
                         height: 10px;
                         progress: root.state.progress_value;
@@ -826,9 +788,11 @@ export component AppWindow inherits Window {
                         states [
                             visible_state when root.state.progress_visible: {
                                 opacity: 1.0;
+
                                 in {
                                     animate opacity { duration: 250ms; }
                                 }
+
                                 out {
                                     animate opacity { duration: 250ms; }
                                 }
