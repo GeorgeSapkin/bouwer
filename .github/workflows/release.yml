@@ -32,6 +32,11 @@ jobs:
             -C artifacts/bouwer-ubuntu-latest bouwer \
             -C ${{ github.workspace }} LICENSE
 
+          chmod +x artifacts/bouwer-macos-latest/bouwer
+          tar -czf dist/bouwer-${{ github.ref_name }}-macos-aarch64.tar.gz \
+            -C artifacts/bouwer-macos-latest bouwer \
+            -C ${{ github.workspace }} LICENSE
+
           zip -j dist/bouwer-${{ github.ref_name }}-windows-x86_64.zip \
             artifacts/bouwer-windows-latest/bouwer.exe \
             LICENSE
