@@ -39,17 +39,24 @@ A working internet connection.
 A working installation of [Podman](https://podman.io/docs/installation) or
 [Docker](https://www.docker.com/products/docker-desktop/). Bouwer uses these
 container engines to run OpenWrt image builder containers. On Linux use your
-package manager, on Windows - the official websites to install either of them.
+package manager, on macOS - e.g. Homebrew (`brew install podman`), on Windows -
+the official websites to install either of them.
 Additionally, on Linux, Docker must be accessible _without_ super user
 privileges, by e.g. adding your user to the `docker` group.
 
-1 to 3 gigabytes of free disk space for each target and free disk space for the
-firmware images. On Windows, image builder images are stored as part of Podman
-or Docker VMs, so you need to account for that when allocating space for them.
+On macOS, the default Podman machine socket is detected automatically. For a
+custom machine name, or for Docker, either make the default Docker API socket
+available (e.g. via `sudo podman-mac-helper install` or Docker Desktop) or
+point `DOCKER_HOST` at the right socket before starting Bouwer.
 
-Currently, modern Linux and Windows running on x86/64 are supported. macOS on
-aarch64 is doable, but there's no practical way for me to test this at the
-moment, although the basic macOS-specific hooks are there.
+1 to 3 gigabytes of free disk space for each target and free disk space for the
+firmware images. On Windows and macOS, image builder images are stored as part
+of Podman or Docker VMs, so you need to account for that when allocating space
+for them.
+
+Currently, modern Linux and Windows running on x86/64, and macOS running on
+Apple silicon (aarch64) are supported. macOS support was tested on macOS 26
+with Podman.
 
 ## Installation
 
