@@ -101,6 +101,17 @@ impl Containers {
             Docker::connect_with_host(&host)?
         } else {
             cfg_select! {
+                target_os = "macos" => {
+                    // Check for the default Podman machine API socket
+                    let socket = env::temp_dir().join("podman/podman-machine-default-api.sock");
+
+                    if socket.exists() {
+                        Docker::connect_with_socket(&socket.to_string_lossy(), 120, bollard::API_DEFAULT_VERSION)?
+                    } else {
+                        // Fallback to defaults
+                        Docker::connect_with_local_defaults()?
+                    }
+                }
                 unix => {
                     // Check for rootless Podman socket
                     let socket = env::var("XDG_RUNTIME_DIR").map_or_else(
